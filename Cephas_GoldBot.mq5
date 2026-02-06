@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                 Cephas_GoldBot_Phase2.mq5       |
-//|                                 ENHANCED PROFITABILITY VERSION  |
-//|                                 Added trend/session/volume      |
+//|                                 Cephas_GoldBot.mq5              |
+//|                                 MEAN REVERSION GOLD BOT         |
+//|                                 v3.2 - Fixed breakeven + Sys2   |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "3.0"
+#property version   "3.2"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -42,20 +42,20 @@ input int      Max_Hold_Bars = 20;        // Max bars to hold position
 input bool     Use_Emergency_Close = true;// Emergency close if price moves against
 input double   Emergency_Close_Pct = 1.0; // Close if moves 1% against
 
-//--- NEW: TREND FILTER (H1 200 SMA)
-input bool     Use_Trend_Filter = true;   // Only trade with H1 trend
+//--- TREND FILTER (H1 200 SMA) - DISABLED for mean reversion
+input bool     Use_Trend_Filter = false;  // OFF - Mean reversion is counter-trend!
 input int      Trend_MA_Period = 200;     // H1 MA period for trend
 
-//--- NEW: SESSION FILTER
+//--- SESSION FILTER - Trade during active sessions
 input bool     Use_Session_Filter = true; // Only trade London/NY
-input int      London_Start_Hour = 8;     // London session start (broker time)
+input int      London_Start_Hour = 7;     // London session start (broker time)
 input int      London_End_Hour = 17;      // London session end
-input int      NY_Start_Hour = 13;        // NY session start (broker time)
+input int      NY_Start_Hour = 12;        // NY session start (broker time)
 input int      NY_End_Hour = 22;          // NY session end
 
-//--- NEW: VOLUME CONFIRMATION
-input bool     Use_Volume_Filter = true;  // Require volume confirmation
-input double   Volume_Multiplier = 1.2;   // Min volume vs 20-bar average
+//--- VOLUME CONFIRMATION - Relaxed for more signals
+input bool     Use_Volume_Filter = false; // OFF - Don't filter by volume
+input double   Volume_Multiplier = 1.0;   // Min volume vs 20-bar average
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                |
@@ -106,12 +106,12 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v3.0 - ENHANCED PROFITABILITY");
-   Print("NEW FEATURES:");
-   Print("1. H1 Trend Filter (", Trend_MA_Period, " SMA) = ", Use_Trend_Filter ? "ON" : "OFF");
-   Print("2. Session Filter (London/NY) = ", Use_Session_Filter ? "ON" : "OFF");
-   Print("3. Volume Confirmation (", Volume_Multiplier, "x avg) = ", Use_Volume_Filter ? "ON" : "OFF");
-   Print("4. ATR Stop Loss Multiplier = ", ATR_Multiplier, "x");
+   Print("CEPHAS GOLD BOT v3.2 - MEAN REVERSION");
+   Print("FILTER SETTINGS:");
+   Print("1. Trend Filter = ", Use_Trend_Filter ? "ON" : "OFF (counter-trend OK)");
+   Print("2. Session Filter = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
+   Print("3. Volume Filter = ", Use_Volume_Filter ? "ON" : "OFF");
+   Print("4. ATR SL Multiplier = ", ATR_Multiplier, "x");
    Print("==================================================");
    
    return INIT_SUCCEEDED;
@@ -254,31 +254,32 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
 void MoveToBreakeven(ulong ticket, double entry, double currentSL, ENUM_POSITION_TYPE type)
 {
    double newSL = 0;
-   double buffer = Min_Stop_Distance * _Point * 2;
-   
+   double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double buffer = spread + 2 * _Point; // Just enough to cover spread + small buffer
+
    if (type == POSITION_TYPE_BUY)
    {
-      newSL = entry - buffer;
-      // Validate: new SL must be better than current AND above entry
-      if (newSL > currentSL && newSL < entry)
+      newSL = entry + buffer; // Lock in spread cost = true breakeven
+      // Only move if better than current SL
+      if (newSL > currentSL)
       {
-         if (ValidateStopLoss(newSL, entry, type))
+         if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Breakeven move applied to ticket ", ticket);
+               Print("✓ Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
    else if (type == POSITION_TYPE_SELL)
    {
-      newSL = entry + buffer;
-      // Validate: new SL must be better than current AND below entry
-      if (newSL < currentSL && newSL > entry)
+      newSL = entry - buffer; // Lock in spread cost = true breakeven
+      // Only move if better than current SL
+      if (newSL < currentSL || currentSL == 0)
       {
-         if (ValidateStopLoss(newSL, entry, type))
+         if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Breakeven move applied to ticket ", ticket);
+               Print("✓ Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
@@ -291,33 +292,58 @@ void TrailStopLoss(ulong ticket, double entry, double current, double currentSL,
 {
    double newSL = 0;
    double trailAmount = Trail_Step * goldPip;
-   
+
    if (type == POSITION_TYPE_BUY)
    {
       newSL = current - trailAmount;
-      // Validate: new SL must be better than current AND above entry
+      // Only move if better than current SL and locks profit above entry
       if (newSL > currentSL && newSL > entry)
       {
-         if (ValidateStopLoss(newSL, entry, type))
+         if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Trailing stop applied to ticket ", ticket);
+               Print("✓ Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
    else if (type == POSITION_TYPE_SELL)
    {
       newSL = current + trailAmount;
-      // Validate: new SL must be better than current AND below entry
+      // Only move if better than current SL and locks profit below entry
       if (newSL < currentSL && newSL < entry)
       {
-         if (ValidateStopLoss(newSL, entry, type))
+         if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Trailing stop applied to ticket ", ticket);
+               Print("✓ Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| CHECK BROKER MINIMUM STOP DISTANCE                              |
+//| Lightweight check for breakeven/trailing (not initial entry)    |
+//+------------------------------------------------------------------+
+bool CheckBrokerStopDistance(double slPrice, ENUM_POSITION_TYPE type)
+{
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   if (stopsLevel == 0) stopsLevel = 10; // Default minimum
+   double minDist = stopsLevel * _Point;
+
+   if (type == POSITION_TYPE_BUY)
+   {
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if (slPrice >= bid - minDist)
+         return false; // Too close to current price
+   }
+   else
+   {
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      if (slPrice <= ask + minDist)
+         return false; // Too close to current price
+   }
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -595,57 +621,62 @@ int GetSystemSignal(int systemIndex)
       IndicatorRelease(maHandle);
    }
    
-   // System 2: Bollinger Bands + MACD
+   // System 2: Bollinger Bands + MACD momentum confirmation
    if (systemIndex == 1)
    {
-      // Get Bollinger Bands
-      double upperBB[], lowerBB[];
+      // Get Bollinger Bands (middle, upper, lower)
+      double middleBB[], upperBB[], lowerBB[];
+      ArraySetAsSeries(middleBB, true);
       ArraySetAsSeries(upperBB, true);
       ArraySetAsSeries(lowerBB, true);
       int bbHandle = iBands(_Symbol, PERIOD_M5, 20, 0, 2.0, PRICE_CLOSE);
       if (bbHandle == INVALID_HANDLE) return 0;
-      
-      if (CopyBuffer(bbHandle, 1, 0, 1, upperBB) > 0 && 
+
+      if (CopyBuffer(bbHandle, 0, 0, 1, middleBB) > 0 &&
+          CopyBuffer(bbHandle, 1, 0, 1, upperBB) > 0 &&
           CopyBuffer(bbHandle, 2, 0, 1, lowerBB) > 0)
       {
-         // Get current price
          double currentArray[];
          ArraySetAsSeries(currentArray, true);
          if (CopyClose(_Symbol, PERIOD_M5, 0, 1, currentArray) > 0)
          {
             double current = currentArray[0];
-            
-            // Get MACD values
+            double bandWidth = upperBB[0] - lowerBB[0];
+            double lowerZone = lowerBB[0] + bandWidth * 0.15; // Bottom 15% of bands
+            double upperZone = upperBB[0] - bandWidth * 0.15; // Top 15% of bands
+
+            // Get MACD
             double macdMain[], macdSignal[];
             ArraySetAsSeries(macdMain, true);
             ArraySetAsSeries(macdSignal, true);
             int macdHandle = iMACD(_Symbol, PERIOD_M5, 12, 26, 9, PRICE_CLOSE);
-            if (macdHandle == INVALID_HANDLE) 
+            if (macdHandle == INVALID_HANDLE)
             {
                IndicatorRelease(bbHandle);
                return 0;
             }
-            
-            if (CopyBuffer(macdHandle, 0, 0, 2, macdMain) > 0 &&
-                CopyBuffer(macdHandle, 1, 0, 2, macdSignal) > 0)
+
+            if (CopyBuffer(macdHandle, 0, 0, 1, macdMain) > 0 &&
+                CopyBuffer(macdHandle, 1, 0, 1, macdSignal) > 0)
             {
                double macd = macdMain[0];
-               double macdPrev = macdMain[1];
                double signal = macdSignal[0];
-               double signalPrev = macdSignal[1];
-               
+
                IndicatorRelease(bbHandle);
                IndicatorRelease(macdHandle);
-               
-               // Buy: Price touches lower BB, MACD bullish crossover
-               if (current <= lowerBB[0] && macd > signal && macdPrev <= signalPrev)
+
+               // Buy: Price in lower BB zone + MACD bullish (main > signal)
+               if (current <= lowerZone && macd > signal)
                   return 1;
-               
-               // Sell: Price touches upper BB, MACD bearish crossover
-               if (current >= upperBB[0] && macd < signal && macdPrev >= signalPrev)
+
+               // Sell: Price in upper BB zone + MACD bearish (main < signal)
+               if (current >= upperZone && macd < signal)
                   return -1;
             }
-            IndicatorRelease(macdHandle);
+            else
+            {
+               IndicatorRelease(macdHandle);
+            }
          }
       }
       IndicatorRelease(bbHandle);
