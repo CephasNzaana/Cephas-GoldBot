@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v3.3 - Tuned BE/trail for gold  |
+//|                                 v3.4 - Pure mean reversion      |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "3.3"
+#property version   "3.4"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -21,14 +21,14 @@ input bool     Use_Dynamic_SL = true;     // Use dynamic stop based on price
 input double   Risk_to_Entry_Ratio = 0.8; // SL:Entry ratio for validation
 input double   ATR_Multiplier = 3.0;      // ATR multiplier for SL (was 1.5)
 
-input bool     Use_Smart_Breakeven = true;// Move to breakeven SMARTLY
-input double   Breakeven_Trigger = 40;    // 40 pips profit (gold needs room!)
-input bool     Use_Profit_Trailing = true;// Trail stop when in profit
-input double   Trail_Trigger = 50;        // 50 pips profit before trailing
-input double   Trail_Step = 15;           // 15 pips trail step (wider for gold)
+input bool     Use_Smart_Breakeven = false;// OFF - conflicts with mean reversion!
+input double   Breakeven_Trigger = 40;    // pips profit (unused when OFF)
+input bool     Use_Profit_Trailing = false;// OFF - mean reversion IS the exit!
+input double   Trail_Trigger = 50;        // pips profit (unused when OFF)
+input double   Trail_Step = 15;           // pips trail step (unused when OFF)
 
-input bool     System_1_Enable = true;    // System 1
-input bool     System_2_Enable = true;    // System 2
+input bool     System_1_Enable = true;    // System 1 (SMA+RSI mean reversion)
+input bool     System_2_Enable = false;   // System 2 OFF until System 1 proven
 input string   System1_Comment = "Sys1";  // System 1 comment
 input string   System2_Comment = "Sys2";  // System 2 comment
 
@@ -106,7 +106,7 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v3.3 - MEAN REVERSION");
+   Print("CEPHAS GOLD BOT v3.4 - PURE MEAN REVERSION");
    Print("FILTER SETTINGS:");
    Print("1. Trend Filter = ", Use_Trend_Filter ? "ON" : "OFF (counter-trend OK)");
    Print("2. Session Filter = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
