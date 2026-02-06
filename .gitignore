@@ -1,0 +1,21 @@
+# Compiled files
+*.ex5
+*.ex4
+
+# Logs (large files)
+logs.txt
+*.log
+
+# MT5 files
+*.mqproj
+*.mqd
+*.mqh~
+
+# IDE files
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
