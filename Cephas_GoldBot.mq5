@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v3.2 - Fixed breakeven + Sys2   |
+//|                                 v3.3 - Tuned BE/trail for gold  |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "3.2"
+#property version   "3.3"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -22,10 +22,10 @@ input double   Risk_to_Entry_Ratio = 0.8; // SL:Entry ratio for validation
 input double   ATR_Multiplier = 3.0;      // ATR multiplier for SL (was 1.5)
 
 input bool     Use_Smart_Breakeven = true;// Move to breakeven SMARTLY
-input double   Breakeven_Trigger = 15;    // 15 pips profit
+input double   Breakeven_Trigger = 40;    // 40 pips profit (gold needs room!)
 input bool     Use_Profit_Trailing = true;// Trail stop when in profit
-input double   Trail_Trigger = 25;        // 25 pips profit
-input double   Trail_Step = 5;            // 5 pips step
+input double   Trail_Trigger = 50;        // 50 pips profit before trailing
+input double   Trail_Step = 15;           // 15 pips trail step (wider for gold)
 
 input bool     System_1_Enable = true;    // System 1
 input bool     System_2_Enable = true;    // System 2
@@ -106,7 +106,7 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v3.2 - MEAN REVERSION");
+   Print("CEPHAS GOLD BOT v3.3 - MEAN REVERSION");
    Print("FILTER SETTINGS:");
    Print("1. Trend Filter = ", Use_Trend_Filter ? "ON" : "OFF (counter-trend OK)");
    Print("2. Session Filter = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
@@ -642,8 +642,8 @@ int GetSystemSignal(int systemIndex)
          {
             double current = currentArray[0];
             double bandWidth = upperBB[0] - lowerBB[0];
-            double lowerZone = lowerBB[0] + bandWidth * 0.15; // Bottom 15% of bands
-            double upperZone = upperBB[0] - bandWidth * 0.15; // Top 15% of bands
+            double lowerZone = lowerBB[0] + bandWidth * 0.05; // Bottom 5% of bands (tight)
+            double upperZone = upperBB[0] - bandWidth * 0.05; // Top 5% of bands (tight)
 
             // Get MACD
             double macdMain[], macdSignal[];
