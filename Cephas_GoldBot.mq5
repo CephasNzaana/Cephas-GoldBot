@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                 Cephas_GoldBot_Phase1.mq5       |
-//|                                 PROPER MQL5 VERSION             |
-//|                                 Fixed compilation errors        |
+//|                                 Cephas_GoldBot_Phase2.mq5       |
+//|                                 ENHANCED PROFITABILITY VERSION  |
+//|                                 Added trend/session/volume      |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "2.0"
+#property version   "3.0"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -19,6 +19,7 @@ input bool     Use_Validation = true;     // Validate stop levels
 input int      Min_Stop_Distance = 50;    // Min stop distance in points
 input bool     Use_Dynamic_SL = true;     // Use dynamic stop based on price
 input double   Risk_to_Entry_Ratio = 0.8; // SL:Entry ratio for validation
+input double   ATR_Multiplier = 3.0;      // ATR multiplier for SL (was 1.5)
 
 input bool     Use_Smart_Breakeven = true;// Move to breakeven SMARTLY
 input double   Breakeven_Trigger = 15;    // 15 pips profit
@@ -40,6 +41,21 @@ input bool     Use_Mean_Reversion_Exit = true; // Auto exit at mean
 input int      Max_Hold_Bars = 20;        // Max bars to hold position
 input bool     Use_Emergency_Close = true;// Emergency close if price moves against
 input double   Emergency_Close_Pct = 1.0; // Close if moves 1% against
+
+//--- NEW: TREND FILTER (H1 200 SMA)
+input bool     Use_Trend_Filter = true;   // Only trade with H1 trend
+input int      Trend_MA_Period = 200;     // H1 MA period for trend
+
+//--- NEW: SESSION FILTER
+input bool     Use_Session_Filter = true; // Only trade London/NY
+input int      London_Start_Hour = 8;     // London session start (broker time)
+input int      London_End_Hour = 17;      // London session end
+input int      NY_Start_Hour = 13;        // NY session start (broker time)
+input int      NY_End_Hour = 22;          // NY session end
+
+//--- NEW: VOLUME CONFIRMATION
+input bool     Use_Volume_Filter = true;  // Require volume confirmation
+input double   Volume_Multiplier = 1.2;   // Min volume vs 20-bar average
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                |
@@ -90,11 +106,12 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("FIXED GOLD BOT v2.0 - MQL5 VERSION");
-   Print("1. Fixed compilation errors");
-   Print("2. Proper MQL5 syntax");
-   Print("3. Fixed 'Invalid stops' errors");
-   Print("4. Added profit protection");
+   Print("CEPHAS GOLD BOT v3.0 - ENHANCED PROFITABILITY");
+   Print("NEW FEATURES:");
+   Print("1. H1 Trend Filter (", Trend_MA_Period, " SMA) = ", Use_Trend_Filter ? "ON" : "OFF");
+   Print("2. Session Filter (London/NY) = ", Use_Session_Filter ? "ON" : "OFF");
+   Print("3. Volume Confirmation (", Volume_Multiplier, "x avg) = ", Use_Volume_Filter ? "ON" : "OFF");
+   Print("4. ATR Stop Loss Multiplier = ", ATR_Multiplier, "x");
    Print("==================================================");
    
    return INIT_SUCCEEDED;
@@ -463,14 +480,26 @@ void CheckEntrySignals()
       Print("⚠ Daily trade limit reached: ", totalTradesToday, "/", Max_Daily_Trades);
       return;
    }
-   
+
    // Check daily loss limit
    if (dailyPnL <= -Max_Daily_Loss)
    {
       Print("⚠ Daily loss limit reached: $", DoubleToString(dailyPnL, 2));
       return;
    }
-   
+
+   // NEW: Check session filter
+   if (Use_Session_Filter && !IsValidSession())
+   {
+      return; // Outside trading sessions
+   }
+
+   // NEW: Check volume filter
+   if (Use_Volume_Filter && !IsVolumeConfirmed())
+   {
+      return; // Volume too low
+   }
+
    // Check each system
    for (int i = 0; i < 2; i++)
    {
@@ -481,6 +510,12 @@ void CheckEntrySignals()
             int signal = GetSystemSignal(i);
             if (signal != 0)
             {
+               // NEW: Apply trend filter - only trade with trend
+               if (Use_Trend_Filter && !IsTrendAligned(signal))
+               {
+                  continue; // Skip counter-trend signals
+               }
+
                ExecuteTrade(i, signal);
                systems[i].lastTradeTime = TimeCurrent();
                systems[i].tradesToday++;
@@ -642,7 +677,7 @@ void ExecuteTrade(int systemIndex, int signal)
          {
             if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
             {
-               slPrice = entryPrice - (atrArray[0] * 1.5);
+               slPrice = entryPrice - (atrArray[0] * ATR_Multiplier);
             }
             IndicatorRelease(atrHandle);
          }
@@ -671,7 +706,7 @@ void ExecuteTrade(int systemIndex, int signal)
          {
             if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
             {
-               slPrice = entryPrice + (atrArray[0] * 1.5);
+               slPrice = entryPrice + (atrArray[0] * ATR_Multiplier);
             }
             IndicatorRelease(atrHandle);
          }
@@ -799,4 +834,93 @@ void UpdateDailyStats()
       }
    }
 }
+
+//+------------------------------------------------------------------+
+//| CHECK H1 TREND ALIGNMENT                                        |
+//| Only BUY if price > H1 200 SMA (uptrend)                        |
+//| Only SELL if price < H1 200 SMA (downtrend)                     |
+//+------------------------------------------------------------------+
+bool IsTrendAligned(int signal)
+{
+   double maArray[];
+   ArraySetAsSeries(maArray, true);
+   int maHandle = iMA(_Symbol, PERIOD_H1, Trend_MA_Period, 0, MODE_SMA, PRICE_CLOSE);
+   if (maHandle == INVALID_HANDLE) return true; // Allow trade if indicator fails
+
+   if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
+   {
+      double h1MA = maArray[0];
+      IndicatorRelease(maHandle);
+
+      double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      // BUY only in uptrend (price above H1 200 SMA)
+      if (signal == 1 && currentPrice < h1MA)
+      {
+         Print("⚠ BUY blocked: Price below H1 ", Trend_MA_Period, " SMA (downtrend)");
+         return false;
+      }
+
+      // SELL only in downtrend (price below H1 200 SMA)
+      if (signal == -1 && currentPrice > h1MA)
+      {
+         Print("⚠ SELL blocked: Price above H1 ", Trend_MA_Period, " SMA (uptrend)");
+         return false;
+      }
+   }
+   else
+   {
+      IndicatorRelease(maHandle);
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| CHECK IF WITHIN VALID TRADING SESSION                           |
+//| London: 08:00-17:00, NY: 13:00-22:00 (broker time)             |
+//+------------------------------------------------------------------+
+bool IsValidSession()
+{
+   int currentHour = currentTimeStruct.hour;
+
+   // Check London session
+   bool inLondon = (currentHour >= London_Start_Hour && currentHour < London_End_Hour);
+
+   // Check NY session
+   bool inNY = (currentHour >= NY_Start_Hour && currentHour < NY_End_Hour);
+
+   return (inLondon || inNY);
+}
+
+//+------------------------------------------------------------------+
+//| CHECK VOLUME CONFIRMATION                                       |
+//| Current volume must be > Volume_Multiplier * 20-bar average    |
+//+------------------------------------------------------------------+
+bool IsVolumeConfirmed()
+{
+   long volumeArray[];
+   ArraySetAsSeries(volumeArray, true);
+
+   if (CopyTickVolume(_Symbol, PERIOD_M5, 0, 21, volumeArray) < 21)
+      return true; // Allow trade if can't get volume
+
+   // Calculate 20-bar average (excluding current bar)
+   double avgVolume = 0;
+   for (int i = 1; i <= 20; i++)
+   {
+      avgVolume += (double)volumeArray[i];
+   }
+   avgVolume /= 20.0;
+
+   double currentVolume = (double)volumeArray[0];
+
+   if (currentVolume < avgVolume * Volume_Multiplier)
+   {
+      return false; // Volume too low
+   }
+
+   return true;
+}
+
 //+------------------------------------------------------------------+
