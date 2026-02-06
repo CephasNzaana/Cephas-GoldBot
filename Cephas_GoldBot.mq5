@@ -1,17 +1,20 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v3.4 - Pure mean reversion      |
+//|                                 v3.5 - #ProtectingTheGains      |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "3.4"
+#property version   "3.5"
 #property strict
 
 //+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                |
 //+------------------------------------------------------------------+
-input double   Lot_Size = 0.01;           // Fixed lot size
+input double   Lot_Size = 0.01;           // Fixed lot size (when dynamic OFF)
+input bool     Use_Risk_Sizing = true;    // Dynamic position sizing based on risk
+input double   Risk_Percent = 1.0;        // Risk per trade (% of equity)
+input double   Max_Risk_Per_Trade = 50.0; // Max dollar risk per trade (skip if exceeded)
 input int      Magic_Number = 888000;     // Base magic number
 input int      Slippage = 3;              // Slippage in points
 
@@ -106,12 +109,21 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v3.4 - PURE MEAN REVERSION");
-   Print("FILTER SETTINGS:");
-   Print("1. Trend Filter = ", Use_Trend_Filter ? "ON" : "OFF (counter-trend OK)");
-   Print("2. Session Filter = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
-   Print("3. Volume Filter = ", Use_Volume_Filter ? "ON" : "OFF");
-   Print("4. ATR SL Multiplier = ", ATR_Multiplier, "x");
+   Print("CEPHAS GOLD BOT v3.5 - #ProtectingTheGains");
+   Print("RISK MANAGEMENT:");
+   if (Use_Risk_Sizing)
+   {
+      Print("  Dynamic Sizing = ON (", Risk_Percent, "% equity, max $", Max_Risk_Per_Trade, ")");
+   }
+   else
+   {
+      Print("  Fixed Lot = ", Lot_Size);
+   }
+   Print("  ATR SL Multiplier = ", ATR_Multiplier, "x");
+   Print("FILTERS:");
+   Print("  Trend = ", Use_Trend_Filter ? "ON" : "OFF");
+   Print("  Session = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
+   Print("  Volume = ", Use_Volume_Filter ? "ON" : "OFF");
    Print("==================================================");
    
    return INIT_SUCCEEDED;
@@ -758,18 +770,66 @@ void ExecuteTrade(int systemIndex, int signal)
       Print("❌ Trade blocked: Invalid stop loss level");
       return;
    }
-   
-   // Calculate lot size
-   double lotSize = MathMin(Lot_Size, Max_Position_Size);
-   
+
    // Normalize prices
    entryPrice = NormalizeDouble(entryPrice, _Digits);
    slPrice = NormalizeDouble(slPrice, _Digits);
-   
-   Print("System ", systemIndex + 1, ": ", (signal == 1 ? "BUY" : "SELL"));
-   Print("  Entry: $", DoubleToString(entryPrice, 2));
-   Print("  Safety SL: $", DoubleToString(slPrice, 2));
-   Print("  Lot: ", DoubleToString(lotSize, 2));
+
+   // Calculate lot size - dynamic risk sizing or fixed
+   double lotSize;
+   double slDistance = MathAbs(entryPrice - slPrice);
+
+   if (Use_Risk_Sizing && slDistance > 0)
+   {
+      double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+      if (contractSize <= 0) contractSize = 100; // Default for XAUUSD
+      if (minLot <= 0) minLot = 0.01;
+      if (lotStep <= 0) lotStep = 0.01;
+
+      // Check if even minimum lot exceeds max risk
+      double minLotRisk = slDistance * minLot * contractSize;
+      if (minLotRisk > Max_Risk_Per_Trade)
+      {
+         Print("⚠ Trade SKIPPED (#ProtectingTheGains): Risk at min lot $",
+               DoubleToString(minLotRisk, 2), " exceeds max $",
+               DoubleToString(Max_Risk_Per_Trade, 2),
+               " | SL distance: $", DoubleToString(slDistance, 2));
+         return;
+      }
+
+      // Calculate optimal lot size for target risk
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double riskAmount = MathMin(equity * Risk_Percent / 100.0, Max_Risk_Per_Trade);
+      lotSize = riskAmount / (slDistance * contractSize);
+
+      // Round down to lot step
+      lotSize = MathFloor(lotSize / lotStep) * lotStep;
+
+      // Clamp to valid range
+      lotSize = MathMax(lotSize, minLot);
+      lotSize = MathMin(lotSize, Max_Position_Size);
+
+      double actualRisk = slDistance * lotSize * contractSize;
+      Print("System ", systemIndex + 1, ": ", (signal == 1 ? "BUY" : "SELL"));
+      Print("  Entry: $", DoubleToString(entryPrice, 2));
+      Print("  Safety SL: $", DoubleToString(slPrice, 2), " (distance: $", DoubleToString(slDistance, 2), ")");
+      Print("  Risk Sizing: Equity=$", DoubleToString(equity, 2),
+            " | Target Risk=$", DoubleToString(riskAmount, 2),
+            " | Actual Risk=$", DoubleToString(actualRisk, 2));
+      Print("  Lot: ", DoubleToString(lotSize, 2));
+   }
+   else
+   {
+      lotSize = MathMin(Lot_Size, Max_Position_Size);
+
+      Print("System ", systemIndex + 1, ": ", (signal == 1 ? "BUY" : "SELL"));
+      Print("  Entry: $", DoubleToString(entryPrice, 2));
+      Print("  Safety SL: $", DoubleToString(slPrice, 2));
+      Print("  Lot: ", DoubleToString(lotSize, 2), " (fixed)");
+   }
    
    // Open trade
    MqlTradeRequest request;
