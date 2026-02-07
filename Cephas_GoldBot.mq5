@@ -11,10 +11,10 @@
 //+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                |
 //+------------------------------------------------------------------+
-input double   Lot_Size = 0.01;           // Fixed lot size (when dynamic OFF)
-input bool     Use_Risk_Sizing = true;    // Dynamic position sizing based on risk
-input double   Risk_Percent = 1.0;        // Risk per trade (% of equity)
-input double   Max_Risk_Per_Trade = 50.0; // Max dollar risk per trade (skip if exceeded)
+input double   Lot_Size = 0.01;           // Fixed lot size
+input bool     Use_Risk_Sizing = false;   // OFF until R:R ratio improves
+input double   Risk_Percent = 1.0;        // Risk per trade (% of equity) - for future use
+input double   Max_Risk_Per_Trade = 25.0; // Max dollar risk per trade (skip if exceeded at fixed lot)
 input int      Magic_Number = 888000;     // Base magic number
 input int      Slippage = 3;              // Slippage in points
 
@@ -775,40 +775,38 @@ void ExecuteTrade(int systemIndex, int signal)
    entryPrice = NormalizeDouble(entryPrice, _Digits);
    slPrice = NormalizeDouble(slPrice, _Digits);
 
-   // Calculate lot size - dynamic risk sizing or fixed
+   // Calculate lot size and apply risk gate
    double lotSize;
    double slDistance = MathAbs(entryPrice - slPrice);
+   double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   if (contractSize <= 0) contractSize = 100; // Default for XAUUSD
 
-   if (Use_Risk_Sizing && slDistance > 0)
+   // #ProtectingTheGains: Skip trades where risk exceeds max at any lot size
+   if (slDistance > 0 && Max_Risk_Per_Trade > 0)
    {
-      double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-
-      if (contractSize <= 0) contractSize = 100; // Default for XAUUSD
-      if (minLot <= 0) minLot = 0.01;
-      if (lotStep <= 0) lotStep = 0.01;
-
-      // Check if even minimum lot exceeds max risk
-      double minLotRisk = slDistance * minLot * contractSize;
-      if (minLotRisk > Max_Risk_Per_Trade)
+      double tradeRisk = slDistance * Lot_Size * contractSize;
+      if (tradeRisk > Max_Risk_Per_Trade)
       {
-         Print("⚠ Trade SKIPPED (#ProtectingTheGains): Risk at min lot $",
-               DoubleToString(minLotRisk, 2), " exceeds max $",
+         Print("⚠ Trade SKIPPED (#ProtectingTheGains): Risk $",
+               DoubleToString(tradeRisk, 2), " exceeds max $",
                DoubleToString(Max_Risk_Per_Trade, 2),
                " | SL distance: $", DoubleToString(slDistance, 2));
          return;
       }
+   }
 
-      // Calculate optimal lot size for target risk
+   if (Use_Risk_Sizing && slDistance > 0)
+   {
+      double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      if (minLot <= 0) minLot = 0.01;
+      if (lotStep <= 0) lotStep = 0.01;
+
       double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       double riskAmount = MathMin(equity * Risk_Percent / 100.0, Max_Risk_Per_Trade);
       lotSize = riskAmount / (slDistance * contractSize);
 
-      // Round down to lot step
       lotSize = MathFloor(lotSize / lotStep) * lotStep;
-
-      // Clamp to valid range
       lotSize = MathMax(lotSize, minLot);
       lotSize = MathMin(lotSize, Max_Position_Size);
 
@@ -824,11 +822,13 @@ void ExecuteTrade(int systemIndex, int signal)
    else
    {
       lotSize = MathMin(Lot_Size, Max_Position_Size);
+      double actualRisk = slDistance * lotSize * contractSize;
 
       Print("System ", systemIndex + 1, ": ", (signal == 1 ? "BUY" : "SELL"));
       Print("  Entry: $", DoubleToString(entryPrice, 2));
-      Print("  Safety SL: $", DoubleToString(slPrice, 2));
-      Print("  Lot: ", DoubleToString(lotSize, 2), " (fixed)");
+      Print("  Safety SL: $", DoubleToString(slPrice, 2), " (distance: $", DoubleToString(slDistance, 2), ")");
+      Print("  Risk: $", DoubleToString(actualRisk, 2));
+      Print("  Lot: ", DoubleToString(lotSize, 2));
    }
    
    // Open trade
