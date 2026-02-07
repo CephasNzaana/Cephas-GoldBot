@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v5.1 - Filtered Edge            |
+//|                                 v6.0 - M1 Pickaxe              |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "5.1"
+#property version   "6.0"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -23,8 +23,8 @@ input bool     Use_Validation = true;     // Validate stop levels
 input int      Min_Stop_Distance = 50;    // Min stop distance in points
 input bool     Use_Dynamic_SL = true;     // Use dynamic stop based on price
 input double   Risk_to_Entry_Ratio = 0.8; // SL:Entry ratio for validation
-input double   ATR_Multiplier = 5.0;      // ATR multiplier for SL (widened from 3.0 to give trades room)
-input double   Max_SL_Dollars = 35.0;     // v5.1: Max SL in dollars (caps ATR-based SL)
+input double   ATR_Multiplier = 3.0;      // ATR multiplier for SL (M1: smaller ATR, 3x ≈ same $ distance)
+input double   Max_SL_Dollars = 20.0;     // v6.0: Max SL in dollars (tighter per-trade, more trades)
 
 input bool     Use_Smart_Breakeven = false;// OFF - conflicts with mean reversion!
 input double   Breakeven_Trigger = 40;    // pips profit (unused when OFF)
@@ -32,32 +32,32 @@ input bool     Use_Profit_Trailing = false;// OFF - mean reversion IS the exit!
 input double   Trail_Trigger = 50;        // pips profit (unused when OFF)
 input double   Trail_Step = 15;           // pips trail step (unused when OFF)
 
-input bool     System_1_Enable = true;    // System 1 (SMA+RSI mean reversion)
+input bool     System_1_Enable = true;    // System 1 (Donchian+EMA mean reversion)
 input bool     System_2_Enable = false;   // System 2 OFF until System 1 proven
 input string   System1_Comment = "Sys1";  // System 1 comment
 input string   System2_Comment = "Sys2";  // System 2 comment
 
-input int      Max_Daily_Trades = 100;    // Max trades per day
+input int      Max_Daily_Trades = 200;    // Max trades per day (more on M1)
 input double   Max_Daily_Loss = 100;      // Max daily loss in $
 input double   Max_Position_Size = 0.05;  // Max lot size per position
-input int      Min_Bars_Between = 3;      // Min bars between trades
+input int      Min_Bars_Between = 10;     // Min bars between trades (10 min on M1)
 
 //--- EXIT STRATEGY
 input bool     Use_Mean_Reversion_Exit = true; // Auto exit at mean (Stage 1)
 input bool     Use_Extended_Target = true;// Two-stage: BE at mean, run to key level
 input double   Fib_Level = 1.618;         // Fibonacci extension level past mean
-input double   Fib_Target_Multiplier = 2.0;// Max target = 2.0x Fib distance (widened from 1.5)
+input double   Fib_Target_Multiplier = 1.5;// Max target = 1.5x Fib distance (tighter on M1)
 input double   Psych_Level_Size = 50.0;   // Psychological level interval (gold = $50)
-input int      Max_Hold_Bars = 80;        // Max bars to hold position (widened from 50)
+input int      Max_Hold_Bars = 200;       // Max bars to hold position (200 min on M1)
 input bool     Use_Emergency_Close = true;// Emergency close if price moves against
-input double   Emergency_Close_Pct = 1.5; // Close if moves 1.5% against
-input double   Min_Swing_For_ET = 6.0;    // v5.1: Min entry-to-mean swing ($) for ET in RANGING
+input double   Emergency_Close_Pct = 1.0; // Close if moves 1.0% against (tighter on M1)
+input double   Min_Swing_For_ET = 3.0;    // v6.0: Min entry-to-mean swing ($) for ET in RANGING
 
-//--- EAGLE'S VIEW: Market Regime Detection
+//--- EAGLE'S VIEW: Market Regime Detection (stays on H1)
 input bool     Use_Regime_Detection = true;// Adapt strategy to market conditions
 input double   ADX_Trending_Threshold = 25.0; // ADX above this = trending market
 
-//--- EQUITY DRAWDOWN MONITORING (v5.1)
+//--- EQUITY DRAWDOWN MONITORING
 input bool     Monitor_Equity_Drawdown = true; // Log unrealized equity drawdowns
 input double   Drawdown_Alert_Level_1 = 50.0;  // Alert at $50 drawdown
 input double   Drawdown_Alert_Level_2 = 100.0; // Alert at $100 drawdown
@@ -79,16 +79,28 @@ input int      NY_End_Hour = 22;          // NY session end
 input bool     Use_Volume_Filter = false; // OFF - Don't filter by volume
 input double   Volume_Multiplier = 1.0;   // Min volume vs 20-bar average
 
-//--- ENTRY QUALITY FILTERS (v5.1)
-input bool     Use_Momentum_Filter = true;    // Block entries against strong momentum
-input bool     Use_VolSpike_Filter = true;     // Block entries after volatility spikes (news proxy)
-input double   VolSpike_Multiplier = 2.0;      // Spike threshold (bar range vs 20-bar avg)
-input int      VolSpike_Cooldown_Bars = 3;     // Bars to skip after spike (3 = 15min)
+//--- ENTRY QUALITY FILTERS (kept from v5.1)
 input bool     Use_EntryMean_Validation = true;// Mean must be in profitable direction
-input double   Min_Entry_Mean_Distance = 100.0;// Min distance entry-to-mean (pips)
+input double   Min_Entry_Mean_Distance = 50.0; // Min distance entry-to-mean (pips, smaller on M1)
 input bool     Use_KeyLevel_Filter = true;     // Block if key level blocks path to mean
 input double   KeyLevel_Interval = 100.0;      // Major round number interval ($100)
 input double   KeyLevel_Block_Zone = 0.6;      // Block if level in first 60% of path
+
+//--- v6.0: DONCHIAN + EMA ENTRY SYSTEM
+input int      Donchian_Period = 20;          // Donchian Channel period (M1 bars = 20 min)
+input int      EMA_Period = 50;               // EMA period for mean (M1 bars = 50 min)
+input double   Smart_Min_Distance = 1.5;      // Min Donchian width as multiple of M1 ATR(14)
+
+//--- v6.0: H1 HISTORICAL VOLATILITY FILTER
+input bool     Use_H1_Vol_Filter = true;      // Block entries when H1 vol too high
+input double   H1_Vol_Threshold = 40.0;       // Annualized HV threshold (%)
+input int      H1_Vol_Lookback = 24;          // H1 bars for HV calculation (24 = 1 day)
+
+//--- v6.0: PYRAMIDING
+input bool     Use_Pyramiding = true;         // Allow adding to winning positions
+input int      Max_Pyramid_Levels = 3;        // Max positions in same direction
+input double   Pyramid_Min_Profit = 2.0;      // Min $ profit on existing before adding
+input double   Pyramid_ATR_Distance = 1.0;    // Min distance between entries (x ATR)
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                |
@@ -108,7 +120,7 @@ int atrSampleCount = 0;
 // Market regime: 0=RANGING, 1=TRENDING
 int currentRegime = 0;
 
-// Equity monitoring (v5.1)
+// Equity monitoring
 double equityHighWaterMark = 0;
 double maxDrawdownFromPeak = 0;
 double currentDrawdown = 0;
@@ -116,9 +128,22 @@ bool drawdownLevel1Hit = false;
 bool drawdownLevel2Hit = false;
 bool drawdownLevel3Hit = false;
 
-// Volatility spike tracking (v5.1)
-datetime lastSpikeBarTime = 0;
-int barsSinceSpike = 999;
+// v6.0: H1 Historical Volatility filter
+bool h1VolBlockedToday = false;
+double h1VolValue = 0;
+datetime lastH1VolCheck = 0;
+
+// v6.0: Pyramid tracking
+struct PyramidInfo
+{
+   ulong    tickets[3];       // Up to 3 position tickets per direction
+   int      count;            // Current pyramid level (0-3)
+   double   lastEntryPrice;   // Price of most recent pyramid entry
+   int      direction;        // 1=BUY, -1=SELL
+};
+
+PyramidInfo pyramidBuy;
+PyramidInfo pyramidSell;
 
 // Systems data
 struct SystemInfo
@@ -147,6 +172,22 @@ int OnInit()
    maxDrawdownFromPeak = 0;
    currentDrawdown = 0;
 
+   // Initialize H1 vol filter
+   h1VolBlockedToday = false;
+   h1VolValue = 0;
+   lastH1VolCheck = 0;
+
+   // Initialize pyramid tracking
+   pyramidBuy.count = 0;
+   pyramidBuy.direction = 1;
+   pyramidBuy.lastEntryPrice = 0;
+   for (int p = 0; p < 3; p++) pyramidBuy.tickets[p] = 0;
+
+   pyramidSell.count = 0;
+   pyramidSell.direction = -1;
+   pyramidSell.lastEntryPrice = 0;
+   for (int p = 0; p < 3; p++) pyramidSell.tickets[p] = 0;
+
    // Initialize systems
    systems[0].magic = Magic_Number;
    systems[0].name = "System1";
@@ -163,14 +204,18 @@ int OnInit()
    systems[1].profitToday = 0;
 
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v5.1 - Filtered Edge");
+   Print("CEPHAS GOLD BOT v6.0 - M1 Pickaxe");
    Print("==================================================");
+   Print("ENTRY SYSTEM (v6.0):");
+   Print("  Donchian Channel = ", Donchian_Period, " bars (M1)");
+   Print("  EMA Mean = ", EMA_Period, " bars (M1)");
+   Print("  Smart Min Distance = ", Smart_Min_Distance, "x ATR(14)");
    Print("EXIT STRATEGY:");
    if (Use_Extended_Target)
    {
       Print("  Two-Stage Exit = ON (regime-adaptive)");
       Print("  RANGING: Stage 1 -> BE at mean -> run to extended target");
-      Print("  TRENDING: Close at mean (proven 63% win rate)");
+      Print("  TRENDING: Close at mean (proven approach)");
       Print("  Fib Extension = ", Fib_Level, " (cap ", Fib_Target_Multiplier, "x)");
       Print("  Psych Levels = $", Psych_Level_Size, " intervals");
       Print("  Min Swing for ET (RANGING) = $", Min_Swing_For_ET);
@@ -179,7 +224,7 @@ int OnInit()
    {
       Print("  Standard MR Exit = ", Use_Mean_Reversion_Exit ? "ON" : "OFF");
    }
-   Print("  Max Hold Bars = ", Max_Hold_Bars);
+   Print("  Max Hold Bars = ", Max_Hold_Bars, " (", Max_Hold_Bars, " min)");
    Print("  Emergency Close = ", Emergency_Close_Pct, "%");
    Print("EAGLE'S VIEW:");
    Print("  Regime Detection = ", Use_Regime_Detection ? "ON" : "OFF");
@@ -191,10 +236,14 @@ int OnInit()
       Print("  Fixed Lot = ", Lot_Size, " | Risk Gate = $", Base_Max_Risk);
    Print("  ATR SL Multiplier = ", ATR_Multiplier, "x");
    Print("  Max SL Dollars = $", Max_SL_Dollars);
-   Print("ENTRY FILTERS (v5.1):");
-   Print("  Momentum Filter = ", Use_Momentum_Filter ? "ON" : "OFF");
-   Print("  Vol Spike Filter = ", Use_VolSpike_Filter ? "ON" : "OFF",
-         " (", VolSpike_Multiplier, "x, cooldown ", VolSpike_Cooldown_Bars, " bars)");
+   Print("H1 VOLATILITY FILTER:");
+   Print("  Active = ", Use_H1_Vol_Filter ? "ON" : "OFF",
+         " (threshold ", H1_Vol_Threshold, "%, lookback ", H1_Vol_Lookback, " H1 bars)");
+   Print("PYRAMIDING:");
+   Print("  Active = ", Use_Pyramiding ? "ON" : "OFF",
+         " (max ", Max_Pyramid_Levels, " levels, min $", Pyramid_Min_Profit,
+         " profit, ", Pyramid_ATR_Distance, "x ATR spacing)");
+   Print("ENTRY FILTERS:");
    Print("  Entry-Mean Validation = ", Use_EntryMean_Validation ? "ON" : "OFF",
          " (min ", Min_Entry_Mean_Distance, " pips)");
    Print("  Key Level Filter = ", Use_KeyLevel_Filter ? "ON" : "OFF",
@@ -221,6 +270,8 @@ void OnDeinit(const int reason)
    Print("Daily P/L: $", DoubleToString(dailyPnL, 2));
    Print("Max Equity Peak: $", DoubleToString(equityHighWaterMark, 2));
    Print("Max Drawdown: $", DoubleToString(maxDrawdownFromPeak, 2));
+   Print("H1 Vol Today: ", DoubleToString(h1VolValue, 1), "%",
+         h1VolBlockedToday ? " (BLOCKED)" : "");
    Print("==================================================");
 }
 
@@ -229,8 +280,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Check for new bar (M5)
-   datetime currentBarTime = iTime(_Symbol, PERIOD_M5, 0);
+   // Check for new bar (M1)
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
    if (currentBarTime == lastBarTime) return;
    lastBarTime = currentBarTime;
 
@@ -244,16 +295,20 @@ void OnTick()
    // Update rolling ATR average for dynamic risk calculation
    UpdateRollingATRAverage();
 
-   // Update market regime (Eagle's View)
+   // Update market regime (Eagle's View - stays on H1)
    if (Use_Regime_Detection)
       currentRegime = DetectMarketRegime();
 
-   // Monitor equity drawdowns (v5.1)
+   // Monitor equity drawdowns
    if (Monitor_Equity_Drawdown)
       MonitorEquityDrawdown();
 
-   // Update volatility spike tracking (v5.1)
-   UpdateVolatilitySpikeTracking();
+   // Check H1 Historical Volatility filter (v6.0)
+   if (Use_H1_Vol_Filter && !h1VolBlockedToday)
+      CheckH1Volatility();
+
+   // Update pyramid tracking
+   UpdatePyramidTracking();
 
    // Manage existing positions
    ManagePositions();
@@ -293,7 +348,7 @@ int DetectMarketRegime()
 }
 
 //+------------------------------------------------------------------+
-//| MONITOR EQUITY DRAWDOWN (v5.1)                                   |
+//| MONITOR EQUITY DRAWDOWN                                          |
 //| Tracks unrealized losses from equity peak - logging only         |
 //+------------------------------------------------------------------+
 void MonitorEquityDrawdown()
@@ -343,41 +398,209 @@ void MonitorEquityDrawdown()
 }
 
 //+------------------------------------------------------------------+
-//| UPDATE VOLATILITY SPIKE TRACKING (v5.1)                          |
-//| Detects volatility spikes (news proxy) and sets cooldown         |
+//| v6.0: CHECK H1 HISTORICAL VOLATILITY                             |
+//| Calculates annualized std dev of H1 returns over lookback period  |
+//| If above threshold, blocks ALL new entries for rest of day        |
 //+------------------------------------------------------------------+
-void UpdateVolatilitySpikeTracking()
+void CheckH1Volatility()
 {
-   if (!Use_VolSpike_Filter)
+   // Only check once per H1 bar (avoid redundant calculation)
+   datetime currentH1Bar = iTime(_Symbol, PERIOD_H1, 0);
+   if (currentH1Bar == lastH1VolCheck)
+      return;
+   lastH1VolCheck = currentH1Bar;
+
+   double closeArray[];
+   ArraySetAsSeries(closeArray, true);
+
+   // Need H1_Vol_Lookback + 1 bars to calculate H1_Vol_Lookback returns
+   int barsNeeded = H1_Vol_Lookback + 1;
+   if (CopyClose(_Symbol, PERIOD_H1, 0, barsNeeded, closeArray) < barsNeeded)
       return;
 
-   barsSinceSpike++;
-
-   double highArray[];
-   double lowArray[];
-   ArraySetAsSeries(highArray, true);
-   ArraySetAsSeries(lowArray, true);
-
-   // Need bars 1 through 21 (bar[1] = just completed, bars 2-21 = lookback)
-   if (CopyHigh(_Symbol, PERIOD_M5, 1, 21, highArray) < 21)
-      return;
-   if (CopyLow(_Symbol, PERIOD_M5, 1, 21, lowArray) < 21)
-      return;
-
-   double prevBarRange = highArray[0] - lowArray[0];
-
-   double avgRange = 0;
-   for (int i = 1; i <= 20; i++)
-      avgRange += (highArray[i] - lowArray[i]);
-   avgRange /= 20.0;
-
-   if (avgRange > 0 && prevBarRange > avgRange * VolSpike_Multiplier)
+   // Calculate log returns
+   double returns[];
+   ArrayResize(returns, H1_Vol_Lookback);
+   for (int i = 0; i < H1_Vol_Lookback; i++)
    {
-      barsSinceSpike = 0;
-      lastSpikeBarTime = iTime(_Symbol, PERIOD_M5, 1);
-      Print("v5.1 SPIKE: Bar range $", DoubleToString(prevBarRange, 2),
-            " vs avg $", DoubleToString(avgRange, 2),
-            " (", DoubleToString(prevBarRange / avgRange, 1), "x)");
+      if (closeArray[i + 1] > 0)
+         returns[i] = MathLog(closeArray[i] / closeArray[i + 1]);
+      else
+         returns[i] = 0;
+   }
+
+   // Calculate standard deviation of returns
+   double sumReturns = 0;
+   for (int i = 0; i < H1_Vol_Lookback; i++)
+      sumReturns += returns[i];
+   double meanReturn = sumReturns / H1_Vol_Lookback;
+
+   double sumSqDiff = 0;
+   for (int i = 0; i < H1_Vol_Lookback; i++)
+      sumSqDiff += MathPow(returns[i] - meanReturn, 2);
+   double stdDev = MathSqrt(sumSqDiff / (H1_Vol_Lookback - 1));
+
+   // Annualize: multiply by sqrt(trading hours per year)
+   // ~252 trading days * 24 H1 bars = 6048 H1 bars/year
+   double annualizedVol = stdDev * MathSqrt(6048.0) * 100.0; // as percentage
+
+   h1VolValue = annualizedVol;
+
+   if (annualizedVol >= H1_Vol_Threshold)
+   {
+      h1VolBlockedToday = true;
+      Print("v6.0 H1 VOL FILTER: Annualized HV = ", DoubleToString(annualizedVol, 1),
+            "% >= ", DoubleToString(H1_Vol_Threshold, 1),
+            "% | ENTRIES BLOCKED for rest of day");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| v6.0: GET SMART MINIMUM DISTANCE                                  |
+//| Returns minimum Donchian channel width for valid entry            |
+//| = Smart_Min_Distance * current M1 ATR(14)                        |
+//+------------------------------------------------------------------+
+double GetSmartMinDistance()
+{
+   double atrArray[];
+   ArraySetAsSeries(atrArray, true);
+   int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
+   if (atrHandle == INVALID_HANDLE) return 0;
+
+   double result = 0;
+   if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
+      result = atrArray[0] * Smart_Min_Distance;
+   IndicatorRelease(atrHandle);
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| v6.0: UPDATE PYRAMID TRACKING                                     |
+//| Scans open positions and refreshes pyramid state                  |
+//+------------------------------------------------------------------+
+void UpdatePyramidTracking()
+{
+   // Reset counts
+   pyramidBuy.count = 0;
+   pyramidBuy.lastEntryPrice = 0;
+   for (int p = 0; p < 3; p++) pyramidBuy.tickets[p] = 0;
+
+   pyramidSell.count = 0;
+   pyramidSell.lastEntryPrice = 0;
+   for (int p = 0; p < 3; p++) pyramidSell.tickets[p] = 0;
+
+   for (int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if (ticket > 0 && PositionSelectByTicket(ticket))
+      {
+         if (PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         int sysIdx = GetSystemIndex((int)PositionGetInteger(POSITION_MAGIC));
+         if (sysIdx < 0) continue;
+
+         ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         double entryP = PositionGetDouble(POSITION_PRICE_OPEN);
+
+         if (pType == POSITION_TYPE_BUY && pyramidBuy.count < 3)
+         {
+            pyramidBuy.tickets[pyramidBuy.count] = ticket;
+            pyramidBuy.count++;
+            if (entryP > 0)
+               pyramidBuy.lastEntryPrice = entryP;
+         }
+         else if (pType == POSITION_TYPE_SELL && pyramidSell.count < 3)
+         {
+            pyramidSell.tickets[pyramidSell.count] = ticket;
+            pyramidSell.count++;
+            if (entryP > 0)
+               pyramidSell.lastEntryPrice = entryP;
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| v6.0: CHECK IF PYRAMID ENTRY IS ALLOWED                           |
+//| Returns true if conditions met to add to existing position        |
+//+------------------------------------------------------------------+
+bool CanPyramid(int signal)
+{
+   if (!Use_Pyramiding) return false;
+
+   int count = (signal == 1) ? pyramidBuy.count : pyramidSell.count;
+   double lastEntry = (signal == 1) ? pyramidBuy.lastEntryPrice : pyramidSell.lastEntryPrice;
+
+   // Check max levels
+   if (count >= Max_Pyramid_Levels) return false;
+   if (count == 0) return true; // First entry always OK (not a pyramid)
+
+   // Check minimum profit on existing positions
+   double totalProfit = 0;
+   if (signal == 1)
+   {
+      for (int i = 0; i < pyramidBuy.count; i++)
+      {
+         if (pyramidBuy.tickets[i] > 0 && PositionSelectByTicket(pyramidBuy.tickets[i]))
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+      }
+   }
+   else
+   {
+      for (int i = 0; i < pyramidSell.count; i++)
+      {
+         if (pyramidSell.tickets[i] > 0 && PositionSelectByTicket(pyramidSell.tickets[i]))
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+      }
+   }
+   if (totalProfit < Pyramid_Min_Profit) return false;
+
+   // Check minimum distance from last entry
+   double currentPrice = (signal == 1) ?
+      SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
+      SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   double atrArray[];
+   ArraySetAsSeries(atrArray, true);
+   int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
+   if (atrHandle == INVALID_HANDLE) return false;
+
+   double minDist = 0;
+   if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
+      minDist = atrArray[0] * Pyramid_ATR_Distance;
+   IndicatorRelease(atrHandle);
+
+   double distFromLast = MathAbs(currentPrice - lastEntry);
+   if (distFromLast < minDist) return false;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| v6.0: CLOSE ALL PYRAMID POSITIONS (basket close)                  |
+//+------------------------------------------------------------------+
+void CloseAllPyramidPositions(int direction, string comment)
+{
+   if (direction == 1)
+   {
+      for (int i = 0; i < pyramidBuy.count; i++)
+      {
+         if (pyramidBuy.tickets[i] > 0)
+            ClosePositionWithComment(pyramidBuy.tickets[i], comment);
+      }
+      pyramidBuy.count = 0;
+      pyramidBuy.lastEntryPrice = 0;
+      for (int p = 0; p < 3; p++) pyramidBuy.tickets[p] = 0;
+   }
+   else
+   {
+      for (int i = 0; i < pyramidSell.count; i++)
+      {
+         if (pyramidSell.tickets[i] > 0)
+            ClosePositionWithComment(pyramidSell.tickets[i], comment);
+      }
+      pyramidSell.count = 0;
+      pyramidSell.lastEntryPrice = 0;
+      for (int p = 0; p < 3; p++) pyramidSell.tickets[p] = 0;
    }
 }
 
@@ -388,7 +611,7 @@ void UpdateRollingATRAverage()
 {
    double atrArray[];
    ArraySetAsSeries(atrArray, true);
-   int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+   int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
    if (atrHandle != INVALID_HANDLE)
    {
       if (CopyBuffer(atrHandle, 0, 0, 20, atrArray) > 0)
@@ -413,7 +636,7 @@ double GetDynamicMaxRisk()
 
    double atrArray[];
    ArraySetAsSeries(atrArray, true);
-   int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+   int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
    if (atrHandle == INVALID_HANDLE)
       return Base_Max_Risk;
 
@@ -439,86 +662,7 @@ double GetDynamicMaxRisk()
 }
 
 //+------------------------------------------------------------------+
-//| v5.1 ENTRY FILTER: CHECK MOMENTUM AGAINST SIGNAL                |
-//| Returns true to BLOCK entry if last 3 bars show accelerating     |
-//| momentum AGAINST the reversion direction                         |
-//+------------------------------------------------------------------+
-bool CheckMomentumAgainst(int signal)
-{
-   if (!Use_Momentum_Filter)
-      return false;
-
-   double closeArray[];
-   double highArray[];
-   double lowArray[];
-   ArraySetAsSeries(closeArray, true);
-   ArraySetAsSeries(highArray, true);
-   ArraySetAsSeries(lowArray, true);
-
-   if (CopyClose(_Symbol, PERIOD_M5, 1, 3, closeArray) < 3)
-      return false;
-   if (CopyHigh(_Symbol, PERIOD_M5, 1, 3, highArray) < 3)
-      return false;
-   if (CopyLow(_Symbol, PERIOD_M5, 1, 3, lowArray) < 3)
-      return false;
-
-   // closeArray[0]=bar[1] (most recent completed), [1]=bar[2], [2]=bar[3]
-
-   if (signal == 1) // BUY signal - block if 3 consecutive lower closes with expanding range
-   {
-      if (closeArray[0] < closeArray[1] && closeArray[1] < closeArray[2])
-      {
-         double range0 = highArray[0] - lowArray[0];
-         double range1 = highArray[1] - lowArray[1];
-         double range2 = highArray[2] - lowArray[2];
-
-         if (range0 > range1 && range1 > range2)
-         {
-            Print("v5.1 FILTER: BUY blocked - momentum against (3 lower closes, expanding range)");
-            return true;
-         }
-      }
-   }
-   else if (signal == -1) // SELL signal - block if 3 consecutive higher closes with expanding range
-   {
-      if (closeArray[0] > closeArray[1] && closeArray[1] > closeArray[2])
-      {
-         double range0 = highArray[0] - lowArray[0];
-         double range1 = highArray[1] - lowArray[1];
-         double range2 = highArray[2] - lowArray[2];
-
-         if (range0 > range1 && range1 > range2)
-         {
-            Print("v5.1 FILTER: SELL blocked - momentum against (3 higher closes, expanding range)");
-            return true;
-         }
-      }
-   }
-
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| v5.1 ENTRY FILTER: CHECK VOLATILITY SPIKE COOLDOWN              |
-//| Returns true to BLOCK entry if within cooldown after spike        |
-//+------------------------------------------------------------------+
-bool CheckVolatilitySpike()
-{
-   if (!Use_VolSpike_Filter)
-      return false;
-
-   if (barsSinceSpike <= VolSpike_Cooldown_Bars)
-   {
-      Print("v5.1 FILTER: Entry blocked - volatility spike cooldown (",
-            barsSinceSpike, "/", VolSpike_Cooldown_Bars, " bars)");
-      return true;
-   }
-
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| v5.1 ENTRY FILTER: VALIDATE ENTRY-MEAN DIRECTION                |
+//| v5.1 ENTRY FILTER: VALIDATE ENTRY-MEAN DIRECTION (kept)         |
 //| 1. Mean must be in profitable direction from entry                |
 //| 2. Distance from entry to mean must exceed minimum                |
 //+------------------------------------------------------------------+
@@ -529,7 +673,7 @@ bool ValidateEntryMeanDirection(int signal)
 
    double maArray[];
    ArraySetAsSeries(maArray, true);
-   int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+   int maHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
    if (maHandle == INVALID_HANDLE) return true;
 
    if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
@@ -546,13 +690,13 @@ bool ValidateEntryMeanDirection(int signal)
       // Check 1: Mean must be in profitable direction
       if (signal == 1 && mean <= entryPrice)
       {
-         Print("v5.1 FILTER: BUY blocked - Mean ($", DoubleToString(mean, 2),
+         Print("v6.0 FILTER: BUY blocked - Mean ($", DoubleToString(mean, 2),
                ") not above entry ($", DoubleToString(entryPrice, 2), ")");
          return false;
       }
       if (signal == -1 && mean >= entryPrice)
       {
-         Print("v5.1 FILTER: SELL blocked - Mean ($", DoubleToString(mean, 2),
+         Print("v6.0 FILTER: SELL blocked - Mean ($", DoubleToString(mean, 2),
                ") not below entry ($", DoubleToString(entryPrice, 2), ")");
          return false;
       }
@@ -563,7 +707,7 @@ bool ValidateEntryMeanDirection(int signal)
 
       if (distanceToMean < minDistance)
       {
-         Print("v5.1 FILTER: Entry blocked - distance to mean: ",
+         Print("v6.0 FILTER: Entry blocked - distance to mean: ",
                DoubleToString(distanceToMean / goldPip, 1),
                " pips (min: ", Min_Entry_Mean_Distance, ")");
          return false;
@@ -580,7 +724,7 @@ bool ValidateEntryMeanDirection(int signal)
 }
 
 //+------------------------------------------------------------------+
-//| v5.1 ENTRY FILTER: CHECK KEY LEVEL BLOCKING                     |
+//| ENTRY FILTER: CHECK KEY LEVEL BLOCKING (kept from v5.1)          |
 //| Returns true to BLOCK if a major round number ($100 interval)     |
 //| sits between entry and mean in the first 60% of the path         |
 //+------------------------------------------------------------------+
@@ -602,7 +746,7 @@ bool CheckKeyLevelBlocking(int signal, double entryPrice, double mean)
       {
          if (level > entryPrice && level <= blockZoneTop)
          {
-            Print("v5.1 FILTER: BUY blocked - Key level $", DoubleToString(level, 0),
+            Print("v6.0 FILTER: BUY blocked - Key level $", DoubleToString(level, 0),
                   " blocks path ($", DoubleToString(entryPrice, 2),
                   " -> $", DoubleToString(mean, 2), ")");
             return true;
@@ -618,7 +762,7 @@ bool CheckKeyLevelBlocking(int signal, double entryPrice, double mean)
       {
          if (level < entryPrice && level >= blockZoneBottom)
          {
-            Print("v5.1 FILTER: SELL blocked - Key level $", DoubleToString(level, 0),
+            Print("v6.0 FILTER: SELL blocked - Key level $", DoubleToString(level, 0),
                   " blocks path ($", DoubleToString(entryPrice, 2),
                   " -> $", DoubleToString(mean, 2), ")");
             return true;
@@ -658,11 +802,11 @@ void ManagePositions()
 }
 
 //+------------------------------------------------------------------+
-//| MANAGE SINGLE POSITION - v5.1 Filtered Edge                     |
+//| MANAGE SINGLE POSITION - v6.0 M1 Pickaxe                        |
 //| RANGING: Two-stage exit (BE at mean, run to extended target)     |
-//|   v5.1: Only run for ET if swing > Min_Swing_For_ET             |
-//| TRENDING: Close at mean immediately (proven 63% win rate)        |
-//| Key fix: if BE can't be placed, fall back to MR exit             |
+//|   v6.0: Only run for ET if swing > Min_Swing_For_ET             |
+//| TRENDING: Close at mean immediately                              |
+//| v6.0: Basket close for pyramid positions                         |
 //+------------------------------------------------------------------+
 void ManageSinglePosition(ulong ticket, int systemIndex)
 {
@@ -692,13 +836,17 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
 
          if (adverseMove >= Emergency_Close_Pct)
          {
-            ClosePositionWithComment(ticket, "Emergency Close - Adverse Move");
+            int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+            if (Use_Pyramiding)
+               CloseAllPyramidPositions(dir, "Emergency Close - Adverse Move");
+            else
+               ClosePositionWithComment(ticket, "Emergency Close - Adverse Move");
             return;
          }
       }
 
-      // 2. Check max hold time
-      int barsHeld = (int)((TimeCurrent() - entryTime) / (5 * 60));
+      // 2. Check max hold time (M1: 1 minute per bar)
+      int barsHeld = (int)((TimeCurrent() - entryTime) / (1 * 60));
       if (barsHeld >= Max_Hold_Bars)
       {
          ClosePositionWithComment(ticket, "Max Hold Time Reached");
@@ -708,10 +856,10 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
       // 3. Two-stage exit with extended targets (main exit logic)
       if (Use_Extended_Target && barsHeld > 2)
       {
-         // Get current mean (20-period SMA)
+         // Get current mean (EMA on M1)
          double maArray[];
          ArraySetAsSeries(maArray, true);
-         int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+         int maHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
          if (maHandle == INVALID_HANDLE) return;
 
          if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
@@ -737,7 +885,11 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                   Print("Extended Target Hit (BUY): Target $", DoubleToString(target, 2),
                         " | Entry $", DoubleToString(entryPrice, 2),
                         " | Profit: $", DoubleToString(profit, 2));
-                  ClosePositionWithComment(ticket, "Extended Target Exit");
+                  int dir = 1;
+                  if (Use_Pyramiding)
+                     CloseAllPyramidPositions(dir, "Extended Target Exit");
+                  else
+                     ClosePositionWithComment(ticket, "Extended Target Exit");
                   return;
                }
                else if (posType == POSITION_TYPE_SELL && currentPrice <= target)
@@ -746,7 +898,11 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                   Print("Extended Target Hit (SELL): Target $", DoubleToString(target, 2),
                         " | Entry $", DoubleToString(entryPrice, 2),
                         " | Profit: $", DoubleToString(profit, 2));
-                  ClosePositionWithComment(ticket, "Extended Target Exit");
+                  int dir = -1;
+                  if (Use_Pyramiding)
+                     CloseAllPyramidPositions(dir, "Extended Target Exit");
+                  else
+                     ClosePositionWithComment(ticket, "Extended Target Exit");
                   return;
                }
                // Stage 2: keep holding - BE SL protects at zero risk
@@ -762,26 +918,34 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
 
                if (reachedMean)
                {
+                  int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+
                   // EAGLE'S VIEW: Adapt behavior to market regime
                   if (Use_Regime_Detection && currentRegime == 1)
                   {
-                     // TRENDING: Close at mean immediately (v3.4 proven approach)
+                     // TRENDING: Close at mean immediately
                      double profit = MathAbs(currentPrice - entryPrice);
                      Print("TRENDING regime: MR exit at mean ($", DoubleToString(mean, 2),
                            ") | Profit: $", DoubleToString(profit, 2));
-                     ClosePositionWithComment(ticket, "Mean Reversion Exit (Trending)");
+                     if (Use_Pyramiding)
+                        CloseAllPyramidPositions(dir, "Mean Reversion Exit (Trending)");
+                     else
+                        ClosePositionWithComment(ticket, "Mean Reversion Exit (Trending)");
                      return;
                   }
 
-                  // v5.1 RANGING SWEET SPOT: Only run for ET if swing was meaningful
+                  // v6.0 RANGING SWEET SPOT: Only run for ET if swing was meaningful
                   double entryToMean = MathAbs(mean - entryPrice);
                   if (entryToMean < Min_Swing_For_ET)
                   {
                      double profit = MathAbs(currentPrice - entryPrice);
-                     Print("v5.1 RANGING: Weak swing ($", DoubleToString(entryToMean, 2),
+                     Print("v6.0 RANGING: Weak swing ($", DoubleToString(entryToMean, 2),
                            " < $", DoubleToString(Min_Swing_For_ET, 2),
                            ") - MR exit at mean");
-                     ClosePositionWithComment(ticket, "Mean Reversion Exit (Weak Swing)");
+                     if (Use_Pyramiding)
+                        CloseAllPyramidPositions(dir, "Mean Reversion Exit (Weak Swing)");
+                     else
+                        ClosePositionWithComment(ticket, "Mean Reversion Exit (Weak Swing)");
                      return;
                   }
 
@@ -817,7 +981,10 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                      double profit = MathAbs(currentPrice - entryPrice);
                      Print("MR Exit (BE unavailable): Mean $", DoubleToString(mean, 2),
                            " | Profit: $", DoubleToString(profit, 2));
-                     ClosePositionWithComment(ticket, "Mean Reversion Exit");
+                     if (Use_Pyramiding)
+                        CloseAllPyramidPositions(dir, "Mean Reversion Exit");
+                     else
+                        ClosePositionWithComment(ticket, "Mean Reversion Exit");
                      return;
                   }
                }
@@ -1020,7 +1187,7 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
 {
    double maArray[];
    ArraySetAsSeries(maArray, true);
-   int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+   int maHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
    if (maHandle == INVALID_HANDLE) return;
 
    if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
@@ -1032,7 +1199,11 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
       {
          if (current >= mean)
          {
-            ClosePositionWithComment(ticket, "Mean Reversion Exit");
+            int dir = 1;
+            if (Use_Pyramiding)
+               CloseAllPyramidPositions(dir, "Mean Reversion Exit");
+            else
+               ClosePositionWithComment(ticket, "Mean Reversion Exit");
             double profit = (current - entry);
             Print("BUY mean reversion complete - Profit: $", DoubleToString(profit, 2));
          }
@@ -1041,7 +1212,11 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
       {
          if (current <= mean)
          {
-            ClosePositionWithComment(ticket, "Mean Reversion Exit");
+            int dir = -1;
+            if (Use_Pyramiding)
+               CloseAllPyramidPositions(dir, "Mean Reversion Exit");
+            else
+               ClosePositionWithComment(ticket, "Mean Reversion Exit");
             double profit = (entry - current);
             Print("SELL mean reversion complete - Profit: $", DoubleToString(profit, 2));
          }
@@ -1078,12 +1253,12 @@ double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE typ
    else
       psychTarget = MathFloor((mean - 0.01) / Psych_Level_Size) * Psych_Level_Size;
 
-   // 3. Opposite Bollinger Band
+   // 3. Opposite Bollinger Band (uses EMA period to match mean)
    double bbTarget = 0;
    double upperBB[], lowerBB[];
    ArraySetAsSeries(upperBB, true);
    ArraySetAsSeries(lowerBB, true);
-   int bbHandle = iBands(_Symbol, PERIOD_M5, 20, 0, 2.0, PRICE_CLOSE);
+   int bbHandle = iBands(_Symbol, PERIOD_M1, EMA_Period, 0, 2.0, PRICE_CLOSE);
    if (bbHandle != INVALID_HANDLE)
    {
       if (CopyBuffer(bbHandle, 1, 0, 1, upperBB) > 0 &&
@@ -1101,7 +1276,7 @@ double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE typ
    double atrTarget = 0;
    double atrArray[];
    ArraySetAsSeries(atrArray, true);
-   int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+   int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
    if (atrHandle != INVALID_HANDLE)
    {
       if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
@@ -1179,7 +1354,7 @@ void ClosePositionWithComment(ulong ticket, string comment)
 }
 
 //+------------------------------------------------------------------+
-//| CHECK ENTRY SIGNALS - v5.1 with quality filters                 |
+//| CHECK ENTRY SIGNALS - v6.0 with Donchian+EMA + pyramid          |
 //+------------------------------------------------------------------+
 void CheckEntrySignals()
 {
@@ -1195,6 +1370,10 @@ void CheckEntrySignals()
    if (Use_Volume_Filter && !IsVolumeConfirmed())
       return;
 
+   // v6.0: H1 Historical Volatility daily block
+   if (Use_H1_Vol_Filter && h1VolBlockedToday)
+      return;
+
    for (int i = 0; i < 2; i++)
    {
       if (systems[i].enabled)
@@ -1207,28 +1386,18 @@ void CheckEntrySignals()
                if (Use_Trend_Filter && !IsTrendAligned(signal))
                   continue;
 
-               // v5.1 Entry Quality Filters
-
-               // Filter 1: Momentum against reversion
-               if (CheckMomentumAgainst(signal))
-                  continue;
-
-               // Filter 2: Volatility spike cooldown (news proxy)
-               if (CheckVolatilitySpike())
-                  continue;
-
-               // Filter 3: Entry-Mean validation (direction + distance)
+               // Entry-Mean validation (direction + distance)
                if (!ValidateEntryMeanDirection(signal))
                   continue;
 
-               // Filter 4: Key level blocking path to mean
+               // Key level blocking path to mean
                double filterEntryPrice = (signal == 1) ?
                   SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
                   SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
                double filterMaArray[];
                ArraySetAsSeries(filterMaArray, true);
-               int filterMaHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+               int filterMaHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
                if (filterMaHandle != INVALID_HANDLE)
                {
                   if (CopyBuffer(filterMaHandle, 0, 0, 1, filterMaArray) > 0)
@@ -1243,6 +1412,28 @@ void CheckEntrySignals()
                   {
                      IndicatorRelease(filterMaHandle);
                   }
+               }
+
+               // v6.0: Pyramid logic - check if this is an add-on or new position
+               if (signal == 1 && pyramidSell.count > 0)
+                  continue; // Don't hedge: have SELL positions, skip BUY
+               if (signal == -1 && pyramidBuy.count > 0)
+                  continue; // Don't hedge: have BUY positions, skip SELL
+
+               if (signal == 1 && pyramidBuy.count > 0)
+               {
+                  // Already have BUY positions - check pyramid conditions
+                  if (!CanPyramid(signal))
+                     continue;
+                  Print("v6.0 PYRAMID: Adding BUY level ", pyramidBuy.count + 1,
+                        "/", Max_Pyramid_Levels);
+               }
+               else if (signal == -1 && pyramidSell.count > 0)
+               {
+                  if (!CanPyramid(signal))
+                     continue;
+                  Print("v6.0 PYRAMID: Adding SELL level ", pyramidSell.count + 1,
+                        "/", Max_Pyramid_Levels);
                }
 
                // All filters passed - execute trade
@@ -1261,7 +1452,7 @@ void CheckEntrySignals()
 //+------------------------------------------------------------------+
 bool CanSystemTrade(int systemIndex)
 {
-   if (TimeCurrent() - systems[systemIndex].lastTradeTime < Min_Bars_Between * 5 * 60)
+   if (TimeCurrent() - systems[systemIndex].lastTradeTime < Min_Bars_Between * 1 * 60)
       return false;
 
    if (systems[systemIndex].tradesToday >= Max_Daily_Trades / 2)
@@ -1271,61 +1462,83 @@ bool CanSystemTrade(int systemIndex)
 }
 
 //+------------------------------------------------------------------+
-//| GET SYSTEM SIGNAL                                               |
+//| GET SYSTEM SIGNAL - v6.0 Donchian + EMA                         |
 //+------------------------------------------------------------------+
 int GetSystemSignal(int systemIndex)
 {
-   // System 1: Price deviation from mean with RSI confirmation
+   // System 1: Donchian Channel + EMA mean reversion (v6.0)
    if (systemIndex == 0)
    {
-      double maArray[];
-      ArraySetAsSeries(maArray, true);
-      int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
-      if (maHandle == INVALID_HANDLE) return 0;
+      // 1. Get EMA (the "mean")
+      double emaArray[];
+      ArraySetAsSeries(emaArray, true);
+      int emaHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, 0, MODE_EMA, PRICE_CLOSE);
+      if (emaHandle == INVALID_HANDLE) return 0;
 
-      if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
+      if (CopyBuffer(emaHandle, 0, 0, 1, emaArray) <= 0)
       {
-         double mean = maArray[0];
-         IndicatorRelease(maHandle);
-
-         double currentArray[];
-         ArraySetAsSeries(currentArray, true);
-         if (CopyClose(_Symbol, PERIOD_M5, 0, 1, currentArray) > 0)
-         {
-            double current = currentArray[0];
-            double deviation = (current - mean) / mean * 100;
-
-            double rsiArray[];
-            ArraySetAsSeries(rsiArray, true);
-            int rsiHandle = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
-            if (rsiHandle == INVALID_HANDLE) return 0;
-
-            if (CopyBuffer(rsiHandle, 0, 0, 2, rsiArray) > 0)
-            {
-               double rsi = rsiArray[0];
-               double rsiPrev = rsiArray[1];
-               IndicatorRelease(rsiHandle);
-
-               if (deviation < -0.3 && rsi < 30 && rsi > rsiPrev)
-                  return 1;
-
-               if (deviation > 0.3 && rsi > 70 && rsi < rsiPrev)
-                  return -1;
-            }
-            IndicatorRelease(rsiHandle);
-         }
+         IndicatorRelease(emaHandle);
+         return 0;
       }
-      IndicatorRelease(maHandle);
+      double mean = emaArray[0];
+      IndicatorRelease(emaHandle);
+
+      // 2. Get Donchian Channel (manual calculation - MQL5 has no built-in)
+      double highArray[], lowArray[];
+      ArraySetAsSeries(highArray, true);
+      ArraySetAsSeries(lowArray, true);
+
+      // Use bars 1..Donchian_Period (completed bars, not current)
+      if (CopyHigh(_Symbol, PERIOD_M1, 1, Donchian_Period, highArray) < Donchian_Period)
+         return 0;
+      if (CopyLow(_Symbol, PERIOD_M1, 1, Donchian_Period, lowArray) < Donchian_Period)
+         return 0;
+
+      double donchianUpper = highArray[0];
+      double donchianLower = lowArray[0];
+      for (int i = 1; i < Donchian_Period; i++)
+      {
+         if (highArray[i] > donchianUpper) donchianUpper = highArray[i];
+         if (lowArray[i] < donchianLower) donchianLower = lowArray[i];
+      }
+
+      double channelWidth = donchianUpper - donchianLower;
+
+      // 3. Smart minimum distance check
+      double minWidth = GetSmartMinDistance();
+      if (channelWidth < minWidth)
+         return 0; // Channel too narrow, skip
+
+      // 4. Check last completed bar for touch/break of Donchian bands
+      double lastHigh[], lastLow[], lastClose[];
+      ArraySetAsSeries(lastHigh, true);
+      ArraySetAsSeries(lastLow, true);
+      ArraySetAsSeries(lastClose, true);
+      if (CopyHigh(_Symbol, PERIOD_M1, 1, 1, lastHigh) <= 0) return 0;
+      if (CopyLow(_Symbol, PERIOD_M1, 1, 1, lastLow) <= 0) return 0;
+      if (CopyClose(_Symbol, PERIOD_M1, 1, 1, lastClose) <= 0) return 0;
+
+      double price = lastClose[0];
+
+      // BUY: last bar touches/breaks below Donchian lower AND close below EMA (stretched)
+      if (lastLow[0] <= donchianLower && price < mean)
+         return 1;
+
+      // SELL: last bar touches/breaks above Donchian upper AND close above EMA (stretched)
+      if (lastHigh[0] >= donchianUpper && price > mean)
+         return -1;
+
+      return 0;
    }
 
-   // System 2: Bollinger Bands + MACD
+   // System 2: Bollinger Bands + MACD (disabled, updated to M1)
    if (systemIndex == 1)
    {
       double middleBB[], upperBB[], lowerBB[];
       ArraySetAsSeries(middleBB, true);
       ArraySetAsSeries(upperBB, true);
       ArraySetAsSeries(lowerBB, true);
-      int bbHandle = iBands(_Symbol, PERIOD_M5, 20, 0, 2.0, PRICE_CLOSE);
+      int bbHandle = iBands(_Symbol, PERIOD_M1, 20, 0, 2.0, PRICE_CLOSE);
       if (bbHandle == INVALID_HANDLE) return 0;
 
       if (CopyBuffer(bbHandle, 0, 0, 1, middleBB) > 0 &&
@@ -1334,7 +1547,7 @@ int GetSystemSignal(int systemIndex)
       {
          double currentArray[];
          ArraySetAsSeries(currentArray, true);
-         if (CopyClose(_Symbol, PERIOD_M5, 0, 1, currentArray) > 0)
+         if (CopyClose(_Symbol, PERIOD_M1, 0, 1, currentArray) > 0)
          {
             double current = currentArray[0];
             double bandWidth = upperBB[0] - lowerBB[0];
@@ -1344,7 +1557,7 @@ int GetSystemSignal(int systemIndex)
             double macdMain[], macdSignal[];
             ArraySetAsSeries(macdMain, true);
             ArraySetAsSeries(macdSignal, true);
-            int macdHandle = iMACD(_Symbol, PERIOD_M5, 12, 26, 9, PRICE_CLOSE);
+            int macdHandle = iMACD(_Symbol, PERIOD_M1, 12, 26, 9, PRICE_CLOSE);
             if (macdHandle == INVALID_HANDLE)
             {
                IndicatorRelease(bbHandle);
@@ -1379,7 +1592,7 @@ int GetSystemSignal(int systemIndex)
 }
 
 //+------------------------------------------------------------------+
-//| EXECUTE TRADE - v5.1 with wider SL + dollar cap                 |
+//| EXECUTE TRADE - v6.0 with M1 ATR SL + dollar cap + pyramid      |
 //+------------------------------------------------------------------+
 void ExecuteTrade(int systemIndex, int signal)
 {
@@ -1396,7 +1609,7 @@ void ExecuteTrade(int systemIndex, int signal)
       {
          double atrArray[];
          ArraySetAsSeries(atrArray, true);
-         int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+         int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
          if (atrHandle != INVALID_HANDLE)
          {
             if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
@@ -1418,7 +1631,7 @@ void ExecuteTrade(int systemIndex, int signal)
       {
          double atrArray[];
          ArraySetAsSeries(atrArray, true);
-         int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+         int atrHandle = iATR(_Symbol, PERIOD_M1, 14);
          if (atrHandle != INVALID_HANDLE)
          {
             if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
@@ -1441,7 +1654,7 @@ void ExecuteTrade(int systemIndex, int signal)
    entryPrice = NormalizeDouble(entryPrice, _Digits);
    slPrice = NormalizeDouble(slPrice, _Digits);
 
-   // v5.1: Dollar cap on SL - tighten SL if dollar risk exceeds Max_SL_Dollars
+   // v6.0: Dollar cap on SL - tighten SL if dollar risk exceeds Max_SL_Dollars
    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
    if (contractSize <= 0) contractSize = 100;
    double slDistance = MathAbs(entryPrice - slPrice);
@@ -1457,7 +1670,7 @@ void ExecuteTrade(int systemIndex, int signal)
 
       slPrice = NormalizeDouble(slPrice, _Digits);
       slDistance = MathAbs(entryPrice - slPrice);
-      Print("v5.1 SL CAP: ATR SL $", DoubleToString(dollarRiskRaw, 2),
+      Print("v6.0 SL CAP: ATR SL $", DoubleToString(dollarRiskRaw, 2),
             " -> capped to $", DoubleToString(Max_SL_Dollars, 2),
             " | SL: $", DoubleToString(slPrice, 2));
    }
@@ -1523,6 +1736,26 @@ void ExecuteTrade(int systemIndex, int signal)
    if (OrderSend(request, result))
    {
       Print("Trade opened: Ticket ", result.order);
+
+      // v6.0: Track pyramid entry
+      if (signal == 1)
+      {
+         if (pyramidBuy.count < 3)
+         {
+            pyramidBuy.tickets[pyramidBuy.count] = result.order;
+            pyramidBuy.count++;
+            pyramidBuy.lastEntryPrice = entryPrice;
+         }
+      }
+      else
+      {
+         if (pyramidSell.count < 3)
+         {
+            pyramidSell.tickets[pyramidSell.count] = result.order;
+            pyramidSell.count++;
+            pyramidSell.lastEntryPrice = entryPrice;
+         }
+      }
    }
    else
    {
@@ -1561,6 +1794,19 @@ void CheckDailyReset()
       drawdownLevel1Hit = false;
       drawdownLevel2Hit = false;
       drawdownLevel3Hit = false;
+
+      // v6.0: Reset H1 vol filter daily
+      h1VolBlockedToday = false;
+      h1VolValue = 0;
+      lastH1VolCheck = 0;
+
+      // v6.0: Reset pyramid tracking (positions survive, tracker re-scans)
+      pyramidBuy.count = 0;
+      pyramidBuy.lastEntryPrice = 0;
+      for (int p = 0; p < 3; p++) pyramidBuy.tickets[p] = 0;
+      pyramidSell.count = 0;
+      pyramidSell.lastEntryPrice = 0;
+      for (int p = 0; p < 3; p++) pyramidSell.tickets[p] = 0;
 
       for (int i = 0; i < 2; i++)
       {
@@ -1657,7 +1903,7 @@ bool IsVolumeConfirmed()
    long volumeArray[];
    ArraySetAsSeries(volumeArray, true);
 
-   if (CopyTickVolume(_Symbol, PERIOD_M5, 0, 21, volumeArray) < 21)
+   if (CopyTickVolume(_Symbol, PERIOD_M1, 0, 21, volumeArray) < 21)
       return true;
 
    double avgVolume = 0;
