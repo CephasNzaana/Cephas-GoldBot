@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v3.5 - #ProtectingTheGains      |
+//|                                 v3.6 - Two-Stage Exit           |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "3.5"
+#property version   "3.6"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -14,7 +14,7 @@
 input double   Lot_Size = 0.01;           // Fixed lot size
 input bool     Use_Risk_Sizing = false;   // OFF until R:R ratio improves
 input double   Risk_Percent = 1.0;        // Risk per trade (% of equity) - for future use
-input double   Max_Risk_Per_Trade = 25.0; // Max dollar risk per trade (skip if exceeded at fixed lot)
+input double   Max_Risk_Per_Trade = 40.0; // Max dollar risk per trade (skip if exceeded at fixed lot)
 input int      Magic_Number = 888000;     // Base magic number
 input int      Slippage = 3;              // Slippage in points
 
@@ -40,10 +40,13 @@ input double   Max_Daily_Loss = 100;      // Max daily loss in $
 input double   Max_Position_Size = 0.05;  // Max lot size per position
 input int      Min_Bars_Between = 3;      // Min bars between trades
 
-input bool     Use_Mean_Reversion_Exit = true; // Auto exit at mean
-input int      Max_Hold_Bars = 20;        // Max bars to hold position
+input bool     Use_Mean_Reversion_Exit = true; // Auto exit at mean (Stage 1)
+input bool     Use_Extended_Target = true;// Two-stage: BE at mean, run to key level
+input double   Fib_Level = 1.618;         // Fibonacci extension level past mean
+input double   Psych_Level_Size = 50.0;   // Psychological level interval (gold = $50)
+input int      Max_Hold_Bars = 50;        // Max bars to hold position (was 20)
 input bool     Use_Emergency_Close = true;// Emergency close if price moves against
-input double   Emergency_Close_Pct = 1.0; // Close if moves 1% against
+input double   Emergency_Close_Pct = 1.5; // Close if moves 1.5% against (was 1%)
 
 //--- TREND FILTER (H1 200 SMA) - DISABLED for mean reversion
 input bool     Use_Trend_Filter = false;  // OFF - Mean reversion is counter-trend!
@@ -109,21 +112,37 @@ int OnInit()
    systems[1].profitToday = 0;
    
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v3.5 - #ProtectingTheGains");
-   Print("RISK MANAGEMENT:");
-   if (Use_Risk_Sizing)
+   Print("CEPHAS GOLD BOT v3.6 - Two-Stage Exit");
+   Print("EXIT STRATEGY:");
+   if (Use_Extended_Target)
    {
-      Print("  Dynamic Sizing = ON (", Risk_Percent, "% equity, max $", Max_Risk_Per_Trade, ")");
+      Print("  Two-Stage Exit = ON");
+      Print("  Stage 1: Wait for mean reversion (original SL protects)");
+      Print("  Stage 2: BE at mean, run to extended target (zero risk)");
+      Print("  Fib Extension = ", Fib_Level);
+      Print("  Psych Levels = $", Psych_Level_Size, " intervals");
+      Print("  + Opposite BB + ATR target (nearest wins)");
    }
    else
    {
-      Print("  Fixed Lot = ", Lot_Size);
+      Print("  Standard MR Exit = ", Use_Mean_Reversion_Exit ? "ON" : "OFF");
    }
+   Print("  Max Hold Bars = ", Max_Hold_Bars);
+   Print("  Emergency Close = ", Emergency_Close_Pct, "%");
+   Print("RISK MANAGEMENT:");
+   if (Use_Risk_Sizing)
+      Print("  Dynamic Sizing = ON (", Risk_Percent, "% equity, max $", Max_Risk_Per_Trade, ")");
+   else
+      Print("  Fixed Lot = ", Lot_Size, " | Risk Gate = $", Max_Risk_Per_Trade);
    Print("  ATR SL Multiplier = ", ATR_Multiplier, "x");
    Print("FILTERS:");
    Print("  Trend = ", Use_Trend_Filter ? "ON" : "OFF");
    Print("  Session = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
    Print("  Volume = ", Use_Volume_Filter ? "ON" : "OFF");
+   Print("  Breakeven = ", Use_Smart_Breakeven ? "ON" : "OFF");
+   Print("  Trailing = ", Use_Profit_Trailing ? "ON" : "OFF");
+   Print("  System 1 = ", System_1_Enable ? "ON" : "OFF");
+   Print("  System 2 = ", System_2_Enable ? "ON" : "OFF");
    Print("==================================================");
    
    return INIT_SUCCEEDED;
@@ -196,7 +215,9 @@ void ManagePositions()
 }
 
 //+------------------------------------------------------------------+
-//| MANAGE SINGLE POSITION                                          |
+//| MANAGE SINGLE POSITION - Two-Stage Exit System                  |
+//| Stage 1: Wait for price to reach mean (original SL protects)    |
+//| Stage 2: SL at breakeven, hold for extended target (zero risk)  |
 //+------------------------------------------------------------------+
 void ManageSinglePosition(ulong ticket, int systemIndex)
 {
@@ -207,16 +228,16 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
       double currentSL = PositionGetDouble(POSITION_SL);
       double profitUSD = PositionGetDouble(POSITION_PROFIT);
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-      
+
       double profitPips = 0;
       if (posType == POSITION_TYPE_BUY)
          profitPips = (currentPrice - entryPrice) / goldPip;
       else if (posType == POSITION_TYPE_SELL)
          profitPips = (entryPrice - currentPrice) / goldPip;
-      
+
       datetime entryTime = (datetime)PositionGetInteger(POSITION_TIME);
-      
-      // 1. Check emergency close
+
+      // 1. Check emergency close (always active, overrides everything)
       if (Use_Emergency_Close)
       {
          double adverseMove = 0;
@@ -224,14 +245,14 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
             adverseMove = ((entryPrice - currentPrice) / entryPrice) * 100;
          else if (posType == POSITION_TYPE_SELL)
             adverseMove = ((currentPrice - entryPrice) / entryPrice) * 100;
-         
+
          if (adverseMove >= Emergency_Close_Pct)
          {
             ClosePositionWithComment(ticket, "Emergency Close - Adverse Move");
             return;
          }
       }
-      
+
       // 2. Check max hold time
       int barsHeld = (int)((TimeCurrent() - entryTime) / (5 * 60));
       if (barsHeld >= Max_Hold_Bars)
@@ -239,23 +260,96 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
          ClosePositionWithComment(ticket, "Max Hold Time Reached");
          return;
       }
-      
-      // 3. Smart breakeven movement
+
+      // 3. Two-stage exit with extended targets (main exit logic)
+      if (Use_Extended_Target && barsHeld > 2)
+      {
+         // Get current mean (20-period SMA)
+         double maArray[];
+         ArraySetAsSeries(maArray, true);
+         int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+         if (maHandle == INVALID_HANDLE) return;
+
+         if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
+         {
+            double mean = maArray[0];
+            IndicatorRelease(maHandle);
+
+            // Detect stage: Stage 2 = SL moved to breakeven (at or past entry)
+            bool isStage2 = false;
+            if (posType == POSITION_TYPE_BUY)
+               isStage2 = (currentSL >= entryPrice);
+            else if (posType == POSITION_TYPE_SELL)
+               isStage2 = (currentSL <= entryPrice && currentSL > 0);
+
+            if (isStage2)
+            {
+               // === STAGE 2: Zero-risk runner targeting extended level ===
+               double target = CalculateExtendedTarget(entryPrice, mean, posType);
+
+               if (posType == POSITION_TYPE_BUY && currentPrice >= target)
+               {
+                  double profit = (currentPrice - entryPrice);
+                  Print("🎯 Extended Target Hit (BUY): Target $", DoubleToString(target, 2),
+                        " | Entry $", DoubleToString(entryPrice, 2),
+                        " | Profit: $", DoubleToString(profit, 2));
+                  ClosePositionWithComment(ticket, "Extended Target Exit");
+                  return;
+               }
+               else if (posType == POSITION_TYPE_SELL && currentPrice <= target)
+               {
+                  double profit = (entryPrice - currentPrice);
+                  Print("🎯 Extended Target Hit (SELL): Target $", DoubleToString(target, 2),
+                        " | Entry $", DoubleToString(entryPrice, 2),
+                        " | Profit: $", DoubleToString(profit, 2));
+                  ClosePositionWithComment(ticket, "Extended Target Exit");
+                  return;
+               }
+               // Stage 2: keep holding - BE SL protects us at zero risk
+            }
+            else
+            {
+               // === STAGE 1: Waiting for mean reversion (original SL active) ===
+               bool reachedMean = false;
+               if (posType == POSITION_TYPE_BUY)
+                  reachedMean = (currentPrice >= mean);
+               else if (posType == POSITION_TYPE_SELL)
+                  reachedMean = (currentPrice <= mean);
+
+               if (reachedMean)
+               {
+                  // Price hit the mean! Move SL to breakeven → transition to Stage 2
+                  double target = CalculateExtendedTarget(entryPrice, mean, posType);
+                  Print("📊 Stage 1→2: Mean reached ($", DoubleToString(mean, 2),
+                        ") | Moving SL to BE | Extended target: $", DoubleToString(target, 2));
+                  MoveToBreakeven(ticket, entryPrice, currentSL, posType);
+                  // Don't close - let it run to extended target with zero-risk BE SL
+               }
+               // Stage 1: keep waiting for mean, original SL protects
+            }
+         }
+         else
+         {
+            IndicatorRelease(maHandle);
+         }
+         return; // Extended target mode handles all exits above
+      }
+
+      // 4. Standard mean reversion exit (when extended target is OFF)
+      if (Use_Mean_Reversion_Exit && barsHeld > 2)
+      {
+         CheckMeanReversionExit(ticket, entryPrice, currentPrice, posType);
+         return;
+      }
+
+      // 5. Legacy breakeven/trailing (OFF by default)
       if (Use_Smart_Breakeven && profitPips >= Breakeven_Trigger)
       {
          MoveToBreakeven(ticket, entryPrice, currentSL, posType);
       }
-      
-      // 4. Profit trailing
       if (Use_Profit_Trailing && profitPips >= Trail_Trigger)
       {
          TrailStopLoss(ticket, entryPrice, currentPrice, currentSL, posType);
-      }
-      
-      // 5. Mean reversion exit
-      if (Use_Mean_Reversion_Exit && barsHeld > 2)
-      {
-         CheckMeanReversionExit(ticket, entryPrice, currentPrice, posType);
       }
    }
 }
@@ -470,6 +564,90 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
    {
       IndicatorRelease(maHandle);
    }
+}
+
+//+------------------------------------------------------------------+
+//| CALCULATE EXTENDED TARGET                                       |
+//| Uses nearest of: Fib extension, Psych level, Opposite BB, ATR  |
+//+------------------------------------------------------------------+
+double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE type)
+{
+   double swingDist = MathAbs(mean - entry);
+   if (swingDist < goldPip) swingDist = goldPip; // Safety minimum
+
+   // 1. Fibonacci extension: mean + (fib-1) * swing distance past the mean
+   double fibTarget = 0;
+   if (type == POSITION_TYPE_BUY)
+      fibTarget = mean + swingDist * (Fib_Level - 1.0);
+   else
+      fibTarget = mean - swingDist * (Fib_Level - 1.0);
+
+   // 2. Nearest psychological level past the mean
+   double psychTarget = 0;
+   if (type == POSITION_TYPE_BUY)
+      psychTarget = MathCeil((mean + 0.01) / Psych_Level_Size) * Psych_Level_Size;
+   else
+      psychTarget = MathFloor((mean - 0.01) / Psych_Level_Size) * Psych_Level_Size;
+
+   // 3. Opposite Bollinger Band
+   double bbTarget = 0;
+   double middleBB[], upperBB[], lowerBB[];
+   ArraySetAsSeries(middleBB, true);
+   ArraySetAsSeries(upperBB, true);
+   ArraySetAsSeries(lowerBB, true);
+   int bbHandle = iBands(_Symbol, PERIOD_M5, 20, 0, 2.0, PRICE_CLOSE);
+   if (bbHandle != INVALID_HANDLE)
+   {
+      if (CopyBuffer(bbHandle, 1, 0, 1, upperBB) > 0 &&
+          CopyBuffer(bbHandle, 2, 0, 1, lowerBB) > 0)
+      {
+         if (type == POSITION_TYPE_BUY)
+            bbTarget = upperBB[0];
+         else
+            bbTarget = lowerBB[0];
+      }
+      IndicatorRelease(bbHandle);
+   }
+
+   // 4. ATR-based target: mean + 1x ATR
+   double atrTarget = 0;
+   double atrArray[];
+   ArraySetAsSeries(atrArray, true);
+   int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+   if (atrHandle != INVALID_HANDLE)
+   {
+      if (CopyBuffer(atrHandle, 0, 0, 1, atrArray) > 0)
+      {
+         if (type == POSITION_TYPE_BUY)
+            atrTarget = mean + atrArray[0];
+         else
+            atrTarget = mean - atrArray[0];
+      }
+      IndicatorRelease(atrHandle);
+   }
+
+   // Pick the nearest valid target past the mean (highest probability of being hit)
+   double target = 0;
+   if (type == POSITION_TYPE_BUY)
+   {
+      target = 999999; // Start high, find minimum
+      if (fibTarget > mean) target = MathMin(target, fibTarget);
+      if (psychTarget > mean) target = MathMin(target, psychTarget);
+      if (bbTarget > mean) target = MathMin(target, bbTarget);
+      if (atrTarget > mean) target = MathMin(target, atrTarget);
+      if (target > 999990) target = mean + swingDist; // Fallback
+   }
+   else
+   {
+      target = 0; // Start low, find maximum
+      if (fibTarget < mean && fibTarget > 0) target = MathMax(target, fibTarget);
+      if (psychTarget < mean && psychTarget > 0) target = MathMax(target, psychTarget);
+      if (bbTarget < mean && bbTarget > 0) target = MathMax(target, bbTarget);
+      if (atrTarget < mean && atrTarget > 0) target = MathMax(target, atrTarget);
+      if (target <= 0) target = mean - swingDist; // Fallback
+   }
+
+   return NormalizeDouble(target, _Digits);
 }
 
 //+------------------------------------------------------------------+
