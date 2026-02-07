@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                 Cephas_GoldBot.mq5              |
 //|                                 MEAN REVERSION GOLD BOT         |
-//|                                 v5.0 - Eagle's View             |
+//|                                 v5.1 - Filtered Edge            |
 //+------------------------------------------------------------------+
 #property copyright "Cephas GoldBot"
 #property link      ""
-#property version   "5.0"
+#property version   "5.1"
 #property strict
 
 //+------------------------------------------------------------------+
@@ -23,7 +23,8 @@ input bool     Use_Validation = true;     // Validate stop levels
 input int      Min_Stop_Distance = 50;    // Min stop distance in points
 input bool     Use_Dynamic_SL = true;     // Use dynamic stop based on price
 input double   Risk_to_Entry_Ratio = 0.8; // SL:Entry ratio for validation
-input double   ATR_Multiplier = 3.0;      // ATR multiplier for SL (back to proven 3.0x)
+input double   ATR_Multiplier = 5.0;      // ATR multiplier for SL (widened from 3.0 to give trades room)
+input double   Max_SL_Dollars = 35.0;     // v5.1: Max SL in dollars (caps ATR-based SL)
 
 input bool     Use_Smart_Breakeven = false;// OFF - conflicts with mean reversion!
 input double   Breakeven_Trigger = 40;    // pips profit (unused when OFF)
@@ -45,15 +46,23 @@ input int      Min_Bars_Between = 3;      // Min bars between trades
 input bool     Use_Mean_Reversion_Exit = true; // Auto exit at mean (Stage 1)
 input bool     Use_Extended_Target = true;// Two-stage: BE at mean, run to key level
 input double   Fib_Level = 1.618;         // Fibonacci extension level past mean
-input double   Fib_Target_Multiplier = 1.5;// Max target = 1.5x Fib distance (cap)
+input double   Fib_Target_Multiplier = 2.0;// Max target = 2.0x Fib distance (widened from 1.5)
 input double   Psych_Level_Size = 50.0;   // Psychological level interval (gold = $50)
-input int      Max_Hold_Bars = 50;        // Max bars to hold position
+input int      Max_Hold_Bars = 80;        // Max bars to hold position (widened from 50)
 input bool     Use_Emergency_Close = true;// Emergency close if price moves against
 input double   Emergency_Close_Pct = 1.5; // Close if moves 1.5% against
+input double   Min_Swing_For_ET = 6.0;    // v5.1: Min entry-to-mean swing ($) for ET in RANGING
 
 //--- EAGLE'S VIEW: Market Regime Detection
 input bool     Use_Regime_Detection = true;// Adapt strategy to market conditions
 input double   ADX_Trending_Threshold = 25.0; // ADX above this = trending market
+
+//--- EQUITY DRAWDOWN MONITORING (v5.1)
+input bool     Monitor_Equity_Drawdown = true; // Log unrealized equity drawdowns
+input double   Drawdown_Alert_Level_1 = 50.0;  // Alert at $50 drawdown
+input double   Drawdown_Alert_Level_2 = 100.0; // Alert at $100 drawdown
+input double   Drawdown_Alert_Level_3 = 200.0; // Alert at $200 drawdown
+input bool     Log_Equity_Peaks = true;        // Track equity high water marks
 
 //--- TREND FILTER (H1 200 SMA) - DISABLED for mean reversion
 input bool     Use_Trend_Filter = false;  // OFF - Mean reversion is counter-trend!
@@ -69,6 +78,17 @@ input int      NY_End_Hour = 22;          // NY session end
 //--- VOLUME CONFIRMATION - Relaxed for more signals
 input bool     Use_Volume_Filter = false; // OFF - Don't filter by volume
 input double   Volume_Multiplier = 1.0;   // Min volume vs 20-bar average
+
+//--- ENTRY QUALITY FILTERS (v5.1)
+input bool     Use_Momentum_Filter = true;    // Block entries against strong momentum
+input bool     Use_VolSpike_Filter = true;     // Block entries after volatility spikes (news proxy)
+input double   VolSpike_Multiplier = 2.0;      // Spike threshold (bar range vs 20-bar avg)
+input int      VolSpike_Cooldown_Bars = 3;     // Bars to skip after spike (3 = 15min)
+input bool     Use_EntryMean_Validation = true;// Mean must be in profitable direction
+input double   Min_Entry_Mean_Distance = 100.0;// Min distance entry-to-mean (pips)
+input bool     Use_KeyLevel_Filter = true;     // Block if key level blocks path to mean
+input double   KeyLevel_Interval = 100.0;      // Major round number interval ($100)
+input double   KeyLevel_Block_Zone = 0.6;      // Block if level in first 60% of path
 
 //+------------------------------------------------------------------+
 //| GLOBAL VARIABLES                                                |
@@ -87,6 +107,18 @@ int atrSampleCount = 0;
 
 // Market regime: 0=RANGING, 1=TRENDING
 int currentRegime = 0;
+
+// Equity monitoring (v5.1)
+double equityHighWaterMark = 0;
+double maxDrawdownFromPeak = 0;
+double currentDrawdown = 0;
+bool drawdownLevel1Hit = false;
+bool drawdownLevel2Hit = false;
+bool drawdownLevel3Hit = false;
+
+// Volatility spike tracking (v5.1)
+datetime lastSpikeBarTime = 0;
+int barsSinceSpike = 999;
 
 // Systems data
 struct SystemInfo
@@ -110,6 +142,11 @@ int OnInit()
    currentTime = TimeCurrent();
    TimeToStruct(currentTime, currentTimeStruct);
 
+   // Initialize equity monitoring
+   equityHighWaterMark = AccountInfoDouble(ACCOUNT_EQUITY);
+   maxDrawdownFromPeak = 0;
+   currentDrawdown = 0;
+
    // Initialize systems
    systems[0].magic = Magic_Number;
    systems[0].name = "System1";
@@ -126,16 +163,17 @@ int OnInit()
    systems[1].profitToday = 0;
 
    Print("==================================================");
-   Print("CEPHAS GOLD BOT v5.0 - Eagle's View");
+   Print("CEPHAS GOLD BOT v5.1 - Filtered Edge");
    Print("==================================================");
    Print("EXIT STRATEGY:");
    if (Use_Extended_Target)
    {
       Print("  Two-Stage Exit = ON (regime-adaptive)");
-      Print("  RANGING: Stage 1 → BE at mean → run to extended target");
+      Print("  RANGING: Stage 1 -> BE at mean -> run to extended target");
       Print("  TRENDING: Close at mean (proven 63% win rate)");
       Print("  Fib Extension = ", Fib_Level, " (cap ", Fib_Target_Multiplier, "x)");
       Print("  Psych Levels = $", Psych_Level_Size, " intervals");
+      Print("  Min Swing for ET (RANGING) = $", Min_Swing_For_ET);
    }
    else
    {
@@ -152,6 +190,18 @@ int OnInit()
    else
       Print("  Fixed Lot = ", Lot_Size, " | Risk Gate = $", Base_Max_Risk);
    Print("  ATR SL Multiplier = ", ATR_Multiplier, "x");
+   Print("  Max SL Dollars = $", Max_SL_Dollars);
+   Print("ENTRY FILTERS (v5.1):");
+   Print("  Momentum Filter = ", Use_Momentum_Filter ? "ON" : "OFF");
+   Print("  Vol Spike Filter = ", Use_VolSpike_Filter ? "ON" : "OFF",
+         " (", VolSpike_Multiplier, "x, cooldown ", VolSpike_Cooldown_Bars, " bars)");
+   Print("  Entry-Mean Validation = ", Use_EntryMean_Validation ? "ON" : "OFF",
+         " (min ", Min_Entry_Mean_Distance, " pips)");
+   Print("  Key Level Filter = ", Use_KeyLevel_Filter ? "ON" : "OFF",
+         " ($", KeyLevel_Interval, " intervals)");
+   Print("EQUITY MONITORING:");
+   Print("  Active = ", Monitor_Equity_Drawdown ? "ON" : "OFF");
+   Print("  Alert Levels: $", Drawdown_Alert_Level_1, " / $", Drawdown_Alert_Level_2, " / $", Drawdown_Alert_Level_3);
    Print("FILTERS:");
    Print("  Session = ", Use_Session_Filter ? "ON (London/NY)" : "OFF");
    Print("  System 1 = ", System_1_Enable ? "ON" : "OFF");
@@ -169,6 +219,8 @@ void OnDeinit(const int reason)
    Print("=== EA STOPPED ===");
    Print("Trades today: ", totalTradesToday);
    Print("Daily P/L: $", DoubleToString(dailyPnL, 2));
+   Print("Max Equity Peak: $", DoubleToString(equityHighWaterMark, 2));
+   Print("Max Drawdown: $", DoubleToString(maxDrawdownFromPeak, 2));
    Print("==================================================");
 }
 
@@ -195,6 +247,13 @@ void OnTick()
    // Update market regime (Eagle's View)
    if (Use_Regime_Detection)
       currentRegime = DetectMarketRegime();
+
+   // Monitor equity drawdowns (v5.1)
+   if (Monitor_Equity_Drawdown)
+      MonitorEquityDrawdown();
+
+   // Update volatility spike tracking (v5.1)
+   UpdateVolatilitySpikeTracking();
 
    // Manage existing positions
    ManagePositions();
@@ -231,6 +290,95 @@ int DetectMarketRegime()
 
    IndicatorRelease(adxHandle);
    return 0; // Default to ranging
+}
+
+//+------------------------------------------------------------------+
+//| MONITOR EQUITY DRAWDOWN (v5.1)                                   |
+//| Tracks unrealized losses from equity peak - logging only         |
+//+------------------------------------------------------------------+
+void MonitorEquityDrawdown()
+{
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if (currentEquity > equityHighWaterMark)
+   {
+      equityHighWaterMark = currentEquity;
+      currentDrawdown = 0;
+      drawdownLevel1Hit = false;
+      drawdownLevel2Hit = false;
+      drawdownLevel3Hit = false;
+
+      if (Log_Equity_Peaks)
+         Print("NEW EQUITY PEAK: $", DoubleToString(equityHighWaterMark, 2));
+   }
+   else
+   {
+      currentDrawdown = equityHighWaterMark - currentEquity;
+
+      if (currentDrawdown > maxDrawdownFromPeak)
+         maxDrawdownFromPeak = currentDrawdown;
+
+      if (currentDrawdown >= Drawdown_Alert_Level_3 && !drawdownLevel3Hit)
+      {
+         drawdownLevel3Hit = true;
+         Print("DRAWDOWN LEVEL 3: $", DoubleToString(currentDrawdown, 2),
+               " (Peak: $", DoubleToString(equityHighWaterMark, 2),
+               " | Current: $", DoubleToString(currentEquity, 2), ")");
+      }
+      else if (currentDrawdown >= Drawdown_Alert_Level_2 && !drawdownLevel2Hit)
+      {
+         drawdownLevel2Hit = true;
+         Print("DRAWDOWN LEVEL 2: $", DoubleToString(currentDrawdown, 2),
+               " (Peak: $", DoubleToString(equityHighWaterMark, 2),
+               " | Current: $", DoubleToString(currentEquity, 2), ")");
+      }
+      else if (currentDrawdown >= Drawdown_Alert_Level_1 && !drawdownLevel1Hit)
+      {
+         drawdownLevel1Hit = true;
+         Print("DRAWDOWN LEVEL 1: $", DoubleToString(currentDrawdown, 2),
+               " (Peak: $", DoubleToString(equityHighWaterMark, 2),
+               " | Current: $", DoubleToString(currentEquity, 2), ")");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| UPDATE VOLATILITY SPIKE TRACKING (v5.1)                          |
+//| Detects volatility spikes (news proxy) and sets cooldown         |
+//+------------------------------------------------------------------+
+void UpdateVolatilitySpikeTracking()
+{
+   if (!Use_VolSpike_Filter)
+      return;
+
+   barsSinceSpike++;
+
+   double highArray[];
+   double lowArray[];
+   ArraySetAsSeries(highArray, true);
+   ArraySetAsSeries(lowArray, true);
+
+   // Need bars 1 through 21 (bar[1] = just completed, bars 2-21 = lookback)
+   if (CopyHigh(_Symbol, PERIOD_M5, 1, 21, highArray) < 21)
+      return;
+   if (CopyLow(_Symbol, PERIOD_M5, 1, 21, lowArray) < 21)
+      return;
+
+   double prevBarRange = highArray[0] - lowArray[0];
+
+   double avgRange = 0;
+   for (int i = 1; i <= 20; i++)
+      avgRange += (highArray[i] - lowArray[i]);
+   avgRange /= 20.0;
+
+   if (avgRange > 0 && prevBarRange > avgRange * VolSpike_Multiplier)
+   {
+      barsSinceSpike = 0;
+      lastSpikeBarTime = iTime(_Symbol, PERIOD_M5, 1);
+      Print("v5.1 SPIKE: Bar range $", DoubleToString(prevBarRange, 2),
+            " vs avg $", DoubleToString(avgRange, 2),
+            " (", DoubleToString(prevBarRange / avgRange, 1), "x)");
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -291,6 +439,197 @@ double GetDynamicMaxRisk()
 }
 
 //+------------------------------------------------------------------+
+//| v5.1 ENTRY FILTER: CHECK MOMENTUM AGAINST SIGNAL                |
+//| Returns true to BLOCK entry if last 3 bars show accelerating     |
+//| momentum AGAINST the reversion direction                         |
+//+------------------------------------------------------------------+
+bool CheckMomentumAgainst(int signal)
+{
+   if (!Use_Momentum_Filter)
+      return false;
+
+   double closeArray[];
+   double highArray[];
+   double lowArray[];
+   ArraySetAsSeries(closeArray, true);
+   ArraySetAsSeries(highArray, true);
+   ArraySetAsSeries(lowArray, true);
+
+   if (CopyClose(_Symbol, PERIOD_M5, 1, 3, closeArray) < 3)
+      return false;
+   if (CopyHigh(_Symbol, PERIOD_M5, 1, 3, highArray) < 3)
+      return false;
+   if (CopyLow(_Symbol, PERIOD_M5, 1, 3, lowArray) < 3)
+      return false;
+
+   // closeArray[0]=bar[1] (most recent completed), [1]=bar[2], [2]=bar[3]
+
+   if (signal == 1) // BUY signal - block if 3 consecutive lower closes with expanding range
+   {
+      if (closeArray[0] < closeArray[1] && closeArray[1] < closeArray[2])
+      {
+         double range0 = highArray[0] - lowArray[0];
+         double range1 = highArray[1] - lowArray[1];
+         double range2 = highArray[2] - lowArray[2];
+
+         if (range0 > range1 && range1 > range2)
+         {
+            Print("v5.1 FILTER: BUY blocked - momentum against (3 lower closes, expanding range)");
+            return true;
+         }
+      }
+   }
+   else if (signal == -1) // SELL signal - block if 3 consecutive higher closes with expanding range
+   {
+      if (closeArray[0] > closeArray[1] && closeArray[1] > closeArray[2])
+      {
+         double range0 = highArray[0] - lowArray[0];
+         double range1 = highArray[1] - lowArray[1];
+         double range2 = highArray[2] - lowArray[2];
+
+         if (range0 > range1 && range1 > range2)
+         {
+            Print("v5.1 FILTER: SELL blocked - momentum against (3 higher closes, expanding range)");
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| v5.1 ENTRY FILTER: CHECK VOLATILITY SPIKE COOLDOWN              |
+//| Returns true to BLOCK entry if within cooldown after spike        |
+//+------------------------------------------------------------------+
+bool CheckVolatilitySpike()
+{
+   if (!Use_VolSpike_Filter)
+      return false;
+
+   if (barsSinceSpike <= VolSpike_Cooldown_Bars)
+   {
+      Print("v5.1 FILTER: Entry blocked - volatility spike cooldown (",
+            barsSinceSpike, "/", VolSpike_Cooldown_Bars, " bars)");
+      return true;
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| v5.1 ENTRY FILTER: VALIDATE ENTRY-MEAN DIRECTION                |
+//| 1. Mean must be in profitable direction from entry                |
+//| 2. Distance from entry to mean must exceed minimum                |
+//+------------------------------------------------------------------+
+bool ValidateEntryMeanDirection(int signal)
+{
+   if (!Use_EntryMean_Validation)
+      return true;
+
+   double maArray[];
+   ArraySetAsSeries(maArray, true);
+   int maHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+   if (maHandle == INVALID_HANDLE) return true;
+
+   if (CopyBuffer(maHandle, 0, 0, 1, maArray) > 0)
+   {
+      double mean = maArray[0];
+      IndicatorRelease(maHandle);
+
+      double entryPrice = 0;
+      if (signal == 1)
+         entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      else
+         entryPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+      // Check 1: Mean must be in profitable direction
+      if (signal == 1 && mean <= entryPrice)
+      {
+         Print("v5.1 FILTER: BUY blocked - Mean ($", DoubleToString(mean, 2),
+               ") not above entry ($", DoubleToString(entryPrice, 2), ")");
+         return false;
+      }
+      if (signal == -1 && mean >= entryPrice)
+      {
+         Print("v5.1 FILTER: SELL blocked - Mean ($", DoubleToString(mean, 2),
+               ") not below entry ($", DoubleToString(entryPrice, 2), ")");
+         return false;
+      }
+
+      // Check 2: Minimum distance from entry to mean
+      double distanceToMean = MathAbs(entryPrice - mean);
+      double minDistance = Min_Entry_Mean_Distance * goldPip;
+
+      if (distanceToMean < minDistance)
+      {
+         Print("v5.1 FILTER: Entry blocked - distance to mean: ",
+               DoubleToString(distanceToMean / goldPip, 1),
+               " pips (min: ", Min_Entry_Mean_Distance, ")");
+         return false;
+      }
+
+      return true;
+   }
+   else
+   {
+      IndicatorRelease(maHandle);
+   }
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| v5.1 ENTRY FILTER: CHECK KEY LEVEL BLOCKING                     |
+//| Returns true to BLOCK if a major round number ($100 interval)     |
+//| sits between entry and mean in the first 60% of the path         |
+//+------------------------------------------------------------------+
+bool CheckKeyLevelBlocking(int signal, double entryPrice, double mean)
+{
+   if (!Use_KeyLevel_Filter)
+      return false;
+
+   double totalPath = MathAbs(mean - entryPrice);
+   if (totalPath < goldPip)
+      return false;
+
+   if (signal == 1) // BUY: entry below mean, price needs to go UP
+   {
+      double blockZoneTop = entryPrice + totalPath * KeyLevel_Block_Zone;
+      double firstLevel = MathCeil(entryPrice / KeyLevel_Interval) * KeyLevel_Interval;
+
+      for (double level = firstLevel; level < mean; level += KeyLevel_Interval)
+      {
+         if (level > entryPrice && level <= blockZoneTop)
+         {
+            Print("v5.1 FILTER: BUY blocked - Key level $", DoubleToString(level, 0),
+                  " blocks path ($", DoubleToString(entryPrice, 2),
+                  " -> $", DoubleToString(mean, 2), ")");
+            return true;
+         }
+      }
+   }
+   else if (signal == -1) // SELL: entry above mean, price needs to go DOWN
+   {
+      double blockZoneBottom = entryPrice - totalPath * KeyLevel_Block_Zone;
+      double firstLevel = MathFloor(entryPrice / KeyLevel_Interval) * KeyLevel_Interval;
+
+      for (double level = firstLevel; level > mean; level -= KeyLevel_Interval)
+      {
+         if (level < entryPrice && level >= blockZoneBottom)
+         {
+            Print("v5.1 FILTER: SELL blocked - Key level $", DoubleToString(level, 0),
+                  " blocks path ($", DoubleToString(entryPrice, 2),
+                  " -> $", DoubleToString(mean, 2), ")");
+            return true;
+         }
+      }
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| MANAGE POSITIONS                                                |
 //+------------------------------------------------------------------+
 void ManagePositions()
@@ -319,10 +658,11 @@ void ManagePositions()
 }
 
 //+------------------------------------------------------------------+
-//| MANAGE SINGLE POSITION - v5.0 Eagle's View                      |
+//| MANAGE SINGLE POSITION - v5.1 Filtered Edge                     |
 //| RANGING: Two-stage exit (BE at mean, run to extended target)     |
+//|   v5.1: Only run for ET if swing > Min_Swing_For_ET             |
 //| TRENDING: Close at mean immediately (proven 63% win rate)        |
-//| Key fix: if BE can't be placed, fall back to MR exit (not hang)  |
+//| Key fix: if BE can't be placed, fall back to MR exit             |
 //+------------------------------------------------------------------+
 void ManageSinglePosition(ulong ticket, int systemIndex)
 {
@@ -394,7 +734,7 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                if (posType == POSITION_TYPE_BUY && currentPrice >= target)
                {
                   double profit = (currentPrice - entryPrice);
-                  Print("🎯 Extended Target Hit (BUY): Target $", DoubleToString(target, 2),
+                  Print("Extended Target Hit (BUY): Target $", DoubleToString(target, 2),
                         " | Entry $", DoubleToString(entryPrice, 2),
                         " | Profit: $", DoubleToString(profit, 2));
                   ClosePositionWithComment(ticket, "Extended Target Exit");
@@ -403,7 +743,7 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                else if (posType == POSITION_TYPE_SELL && currentPrice <= target)
                {
                   double profit = (entryPrice - currentPrice);
-                  Print("🎯 Extended Target Hit (SELL): Target $", DoubleToString(target, 2),
+                  Print("Extended Target Hit (SELL): Target $", DoubleToString(target, 2),
                         " | Entry $", DoubleToString(entryPrice, 2),
                         " | Profit: $", DoubleToString(profit, 2));
                   ClosePositionWithComment(ticket, "Extended Target Exit");
@@ -426,16 +766,26 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                   if (Use_Regime_Detection && currentRegime == 1)
                   {
                      // TRENDING: Close at mean immediately (v3.4 proven approach)
-                     // In trending markets, mean keeps moving - don't hold
                      double profit = MathAbs(currentPrice - entryPrice);
-                     Print("🦅 TRENDING regime: MR exit at mean ($", DoubleToString(mean, 2),
+                     Print("TRENDING regime: MR exit at mean ($", DoubleToString(mean, 2),
                            ") | Profit: $", DoubleToString(profit, 2));
                      ClosePositionWithComment(ticket, "Mean Reversion Exit (Trending)");
                      return;
                   }
 
-                  // RANGING: Try to transition to Stage 2
-                  // Use minimal BE buffer (just spread + tiny safety)
+                  // v5.1 RANGING SWEET SPOT: Only run for ET if swing was meaningful
+                  double entryToMean = MathAbs(mean - entryPrice);
+                  if (entryToMean < Min_Swing_For_ET)
+                  {
+                     double profit = MathAbs(currentPrice - entryPrice);
+                     Print("v5.1 RANGING: Weak swing ($", DoubleToString(entryToMean, 2),
+                           " < $", DoubleToString(Min_Swing_For_ET, 2),
+                           ") - MR exit at mean");
+                     ClosePositionWithComment(ticket, "Mean Reversion Exit (Weak Swing)");
+                     return;
+                  }
+
+                  // RANGING with strong swing: Try to transition to Stage 2
                   double spread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
                   double beSL = 0;
 
@@ -453,11 +803,10 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
 
                   if (canPlaceBE)
                   {
-                     // BE can be placed - transition to Stage 2
                      if (ModifyPositionSL(ticket, NormalizeDouble(beSL, _Digits)))
                      {
                         double target = CalculateExtendedTarget(entryPrice, mean, posType);
-                        Print("📊 Stage 1→2: Mean reached ($", DoubleToString(mean, 2),
+                        Print("Stage 1->2: Mean reached ($", DoubleToString(mean, 2),
                               ") | BE SL = $", DoubleToString(beSL, _Digits),
                               " | Target: $", DoubleToString(target, 2));
                      }
@@ -465,9 +814,8 @@ void ManageSinglePosition(ulong ticket, int systemIndex)
                   else
                   {
                      // BE CAN'T be placed - fall back to MR exit
-                     // This is the v5.0 KEY FIX: don't hang, take the guaranteed profit
                      double profit = MathAbs(currentPrice - entryPrice);
-                     Print("📊 MR Exit (BE unavailable): Mean $", DoubleToString(mean, 2),
+                     Print("MR Exit (BE unavailable): Mean $", DoubleToString(mean, 2),
                            " | Profit: $", DoubleToString(profit, 2));
                      ClosePositionWithComment(ticket, "Mean Reversion Exit");
                      return;
@@ -519,7 +867,7 @@ void MoveToBreakeven(ulong ticket, double entry, double currentSL, ENUM_POSITION
          if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
+               Print("Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
@@ -531,7 +879,7 @@ void MoveToBreakeven(ulong ticket, double entry, double currentSL, ENUM_POSITION
          if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
+               Print("Breakeven: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
@@ -553,7 +901,7 @@ void TrailStopLoss(ulong ticket, double entry, double current, double currentSL,
          if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
+               Print("Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
@@ -565,7 +913,7 @@ void TrailStopLoss(ulong ticket, double entry, double current, double currentSL,
          if (CheckBrokerStopDistance(newSL, type))
          {
             if (ModifyPositionSL(ticket, newSL))
-               Print("✓ Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
+               Print("Trail: ticket ", ticket, " SL moved to ", DoubleToString(newSL, _Digits));
          }
       }
    }
@@ -639,12 +987,12 @@ bool ValidateStopLoss(double slPrice, double entryPrice, ENUM_POSITION_TYPE type
    {
       if (slPrice >= currentBid - minStopDistance)
       {
-         Print("❌ Invalid SL for BUY: Too close to current price");
+         Print("Invalid SL for BUY: Too close to current price");
          return false;
       }
       if (slPrice >= entryPrice * (1 - Risk_to_Entry_Ratio * 0.001))
       {
-         Print("❌ Invalid SL for BUY: Too close to entry");
+         Print("Invalid SL for BUY: Too close to entry");
          return false;
       }
    }
@@ -652,12 +1000,12 @@ bool ValidateStopLoss(double slPrice, double entryPrice, ENUM_POSITION_TYPE type
    {
       if (slPrice <= currentAsk + minStopDistance)
       {
-         Print("❌ Invalid SL for SELL: Too close to current price");
+         Print("Invalid SL for SELL: Too close to current price");
          return false;
       }
       if (slPrice <= entryPrice * (1 + Risk_to_Entry_Ratio * 0.001))
       {
-         Print("❌ Invalid SL for SELL: Too close to entry");
+         Print("Invalid SL for SELL: Too close to entry");
          return false;
       }
    }
@@ -686,7 +1034,7 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
          {
             ClosePositionWithComment(ticket, "Mean Reversion Exit");
             double profit = (current - entry);
-            Print("✅ BUY mean reversion complete - Profit: $", DoubleToString(profit, 2));
+            Print("BUY mean reversion complete - Profit: $", DoubleToString(profit, 2));
          }
       }
       else if (type == POSITION_TYPE_SELL)
@@ -695,7 +1043,7 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
          {
             ClosePositionWithComment(ticket, "Mean Reversion Exit");
             double profit = (entry - current);
-            Print("✅ SELL mean reversion complete - Profit: $", DoubleToString(profit, 2));
+            Print("SELL mean reversion complete - Profit: $", DoubleToString(profit, 2));
          }
       }
    }
@@ -708,7 +1056,7 @@ void CheckMeanReversionExit(ulong ticket, double entry, double current, ENUM_POS
 //+------------------------------------------------------------------+
 //| CALCULATE EXTENDED TARGET (v5.0 - SELL bug fixed)               |
 //| Uses Fib 1.618 as MINIMUM, takes furthest reasonable target     |
-//| Caps at Fib_Target_Multiplier × Fib DISTANCE (not raw price)    |
+//| Caps at Fib_Target_Multiplier x Fib DISTANCE (not raw price)    |
 //+------------------------------------------------------------------+
 double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE type)
 {
@@ -766,10 +1114,10 @@ double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE typ
       IndicatorRelease(atrHandle);
    }
 
-   // v5.0 FIX: Use Fib as minimum, take furthest valid target
+   // Use Fib as minimum, take furthest valid target
    // Cap using DISTANCE from mean (works correctly for both BUY and SELL)
-   double maxDist = fibDist * Fib_Target_Multiplier; // Max distance past mean
-   double target = fibTarget; // Start with Fib minimum
+   double maxDist = fibDist * Fib_Target_Multiplier;
+   double target = fibTarget;
 
    if (type == POSITION_TYPE_BUY)
    {
@@ -783,7 +1131,7 @@ double CalculateExtendedTarget(double entry, double mean, ENUM_POSITION_TYPE typ
    }
    else
    {
-      double minTarget = mean - maxDist; // For SELL: further below = better
+      double minTarget = mean - maxDist;
       if (psychTarget < fibTarget && psychTarget >= minTarget)
          target = MathMin(target, psychTarget);
       if (bbTarget < fibTarget && bbTarget >= minTarget)
@@ -825,13 +1173,13 @@ void ClosePositionWithComment(ulong ticket, string comment)
 
       if (OrderSend(request, result))
       {
-         Print("✓ Position closed: ", comment, " - Ticket ", ticket);
+         Print("Position closed: ", comment, " - Ticket ", ticket);
       }
    }
 }
 
 //+------------------------------------------------------------------+
-//| CHECK ENTRY SIGNALS                                             |
+//| CHECK ENTRY SIGNALS - v5.1 with quality filters                 |
 //+------------------------------------------------------------------+
 void CheckEntrySignals()
 {
@@ -859,6 +1207,45 @@ void CheckEntrySignals()
                if (Use_Trend_Filter && !IsTrendAligned(signal))
                   continue;
 
+               // v5.1 Entry Quality Filters
+
+               // Filter 1: Momentum against reversion
+               if (CheckMomentumAgainst(signal))
+                  continue;
+
+               // Filter 2: Volatility spike cooldown (news proxy)
+               if (CheckVolatilitySpike())
+                  continue;
+
+               // Filter 3: Entry-Mean validation (direction + distance)
+               if (!ValidateEntryMeanDirection(signal))
+                  continue;
+
+               // Filter 4: Key level blocking path to mean
+               double filterEntryPrice = (signal == 1) ?
+                  SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
+                  SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+               double filterMaArray[];
+               ArraySetAsSeries(filterMaArray, true);
+               int filterMaHandle = iMA(_Symbol, PERIOD_M5, 20, 0, MODE_SMA, PRICE_CLOSE);
+               if (filterMaHandle != INVALID_HANDLE)
+               {
+                  if (CopyBuffer(filterMaHandle, 0, 0, 1, filterMaArray) > 0)
+                  {
+                     double filterMean = filterMaArray[0];
+                     IndicatorRelease(filterMaHandle);
+
+                     if (CheckKeyLevelBlocking(signal, filterEntryPrice, filterMean))
+                        continue;
+                  }
+                  else
+                  {
+                     IndicatorRelease(filterMaHandle);
+                  }
+               }
+
+               // All filters passed - execute trade
                ExecuteTrade(i, signal);
                systems[i].lastTradeTime = TimeCurrent();
                systems[i].tradesToday++;
@@ -992,7 +1379,7 @@ int GetSystemSignal(int systemIndex)
 }
 
 //+------------------------------------------------------------------+
-//| EXECUTE TRADE                                                   |
+//| EXECUTE TRADE - v5.1 with wider SL + dollar cap                 |
 //+------------------------------------------------------------------+
 void ExecuteTrade(int systemIndex, int signal)
 {
@@ -1047,31 +1434,48 @@ void ExecuteTrade(int systemIndex, int signal)
 
    if (!ValidateStopLoss(slPrice, entryPrice, (signal == 1) ? POSITION_TYPE_BUY : POSITION_TYPE_SELL))
    {
-      Print("❌ Trade blocked: Invalid stop loss level");
+      Print("Trade blocked: Invalid stop loss level");
       return;
    }
 
    entryPrice = NormalizeDouble(entryPrice, _Digits);
    slPrice = NormalizeDouble(slPrice, _Digits);
 
-   double maxRiskAllowed = GetDynamicMaxRisk();
-   double lotSize;
-   double slDistance = MathAbs(entryPrice - slPrice);
+   // v5.1: Dollar cap on SL - tighten SL if dollar risk exceeds Max_SL_Dollars
    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
    if (contractSize <= 0) contractSize = 100;
+   double slDistance = MathAbs(entryPrice - slPrice);
+   double dollarRiskRaw = slDistance * Lot_Size * contractSize;
+
+   if (Max_SL_Dollars > 0 && dollarRiskRaw > Max_SL_Dollars)
+   {
+      double maxSlDistance = Max_SL_Dollars / (Lot_Size * contractSize);
+      if (signal == 1)
+         slPrice = entryPrice - maxSlDistance;
+      else
+         slPrice = entryPrice + maxSlDistance;
+
+      slPrice = NormalizeDouble(slPrice, _Digits);
+      slDistance = MathAbs(entryPrice - slPrice);
+      Print("v5.1 SL CAP: ATR SL $", DoubleToString(dollarRiskRaw, 2),
+            " -> capped to $", DoubleToString(Max_SL_Dollars, 2),
+            " | SL: $", DoubleToString(slPrice, 2));
+   }
 
    // Risk gate
+   double maxRiskAllowed = GetDynamicMaxRisk();
+   double tradeRisk = slDistance * Lot_Size * contractSize;
    if (slDistance > 0 && maxRiskAllowed > 0)
    {
-      double tradeRisk = slDistance * Lot_Size * contractSize;
       if (tradeRisk > maxRiskAllowed)
       {
-         Print("⚠ Trade SKIPPED: Risk $", DoubleToString(tradeRisk, 2),
+         Print("Trade SKIPPED: Risk $", DoubleToString(tradeRisk, 2),
                " exceeds max $", DoubleToString(maxRiskAllowed, 2));
          return;
       }
    }
 
+   double lotSize;
    if (Use_Risk_Sizing && slDistance > 0)
    {
       double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -1118,11 +1522,11 @@ void ExecuteTrade(int systemIndex, int signal)
 
    if (OrderSend(request, result))
    {
-      Print("✅ Trade opened: Ticket ", result.order);
+      Print("Trade opened: Ticket ", result.order);
    }
    else
    {
-      Print("❌ Failed to open trade: Error ", result.retcode);
+      Print("Failed to open trade: Error ", result.retcode);
    }
 }
 
@@ -1153,6 +1557,11 @@ void CheckDailyReset()
       rollingATRAverage = 0;
       atrSampleCount = 0;
 
+      // Reset drawdown alert flags daily (keep tracking peak)
+      drawdownLevel1Hit = false;
+      drawdownLevel2Hit = false;
+      drawdownLevel3Hit = false;
+
       for (int i = 0; i < 2; i++)
       {
          systems[i].tradesToday = 0;
@@ -1161,6 +1570,8 @@ void CheckDailyReset()
 
       Print("=== DAILY RESET ===");
       Print("Date: ", TimeToString(TimeCurrent(), TIME_DATE));
+      Print("Equity Peak: $", DoubleToString(equityHighWaterMark, 2));
+      Print("Max Drawdown: $", DoubleToString(maxDrawdownFromPeak, 2));
       lastDay = currentTimeStruct.day;
    }
 }
